@@ -57,6 +57,9 @@ class RegistroDefectosSMT:
         self.archivo_defectos = "C:/Registro_defetos_SMT/Settings/defects.ini"
         self.archivo_modelos = "C:/Registro_defetos_SMT/Settings/models.ini"
         self.archivo_log = "C:/Registro_defetos_SMT/LogFile/LogFile.csv"
+        self.archivo_log_pcb = (
+            "C:/Registro_defetos_SMT/LogFile/LogFilePCB.csv"
+        )
 
         os.makedirs(
             os.path.dirname(self.archivo_log),
@@ -71,7 +74,7 @@ class RegistroDefectosSMT:
         self.lista_defectos = []
         self.defectos_seleccionados = []
         self.entries_cantidades = {}
-        self.estandares_modelos = {}
+        self.configuracion_modelos = {}
         self.cerrando_aplicacion = False
         self.after_reloj = None
         self.after_archivos = None
@@ -83,6 +86,29 @@ class RegistroDefectosSMT:
         self.lbl_sin_modelos = None
         self.dashboard_actualizando = False
         self.ax_pareto_porcentaje = None
+        self.modelo_actual = None
+        self.numero_parte_actual = ""
+        self.renglones_panel = 0
+        self.columnas_panel = 0
+        self.total_pcb_panel = 0
+        self.posiciones_defectuosas = {}
+        self.botones_pcb = {}
+        self.sesion_panel_actual = None
+        self.frame_panel_pcb = None
+        self.lbl_info_modelo = None
+        self.btn_confirmar_panel = None
+        self.panel_actual = None
+        self.ventana_captura_ids = None
+        self.entries_ids_pcb = {}
+        self.labels_estado_ids = {}
+        self.proceso_panel_activo = False
+        self.ventana_registro_defectos = None
+        self.posiciones_pendientes_defectos = []
+        self.indice_pcb_defecto_actual = 0
+
+        self.defectos_pcb_actual = {}
+        self.filas_defectos_pcb = {}
+        self.guardando_panel = False
 
         self.root.protocol(
             "WM_DELETE_WINDOW",
@@ -98,6 +124,13 @@ class RegistroDefectosSMT:
 
         # Cargar información inicial
         self.actualizar_archivos(forzar=True)
+
+        modelo_inicial = self.modelo_seleccionado.get()
+
+        if modelo_inicial in self.configuracion_modelos:
+            self.seleccionar_modelo(
+                modelo_inicial
+            )
 
         # Revisar periódicamente si cambiaron los archivos
         self.verificar_cambios_archivos()
@@ -309,8 +342,10 @@ class RegistroDefectosSMT:
             corner_radius=8,
             font=("Arial", 14),
             dropdown_font=("Arial", 14),
-            state="readonly"
+            state="readonly",
+            command=self.seleccionar_modelo
         )
+
         self.combo_modelos.grid(
             row=1,
             column=2,
@@ -349,6 +384,72 @@ class RegistroDefectosSMT:
             row=1,
             column=3,
             padx=15,
+            sticky="ew"
+        )
+
+        # =========================================================
+        # ÁREA DE SELECCIÓN DEL PANEL PCB
+        # =========================================================
+        self.frame_panel_contenedor = ctk.CTkFrame(
+            self.root,
+            corner_radius=12,
+            fg_color="#252842",
+            border_width=1,
+            border_color="#454B70"
+        )
+
+        self.frame_panel_contenedor.pack(
+            fill="x",
+            padx=15,
+            pady=(5, 0)
+        )
+
+        self.frame_panel_contenedor.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        self.lbl_info_modelo = ctk.CTkLabel(
+            self.frame_panel_contenedor,
+            text="Seleccione un modelo",
+            font=("Arial", 17, "bold"),
+            text_color="#DDE2FF"
+        )
+
+        self.lbl_info_modelo.grid(
+            row=0,
+            column=0,
+            padx=20,
+            pady=(10, 5)
+        )
+
+        self.frame_panel_pcb = ctk.CTkFrame(
+            self.frame_panel_contenedor,
+            fg_color="#1F2238",
+            corner_radius=12
+        )
+
+        self.frame_panel_pcb.grid(
+            row=1,
+            column=0,
+            padx=20,
+            pady=5
+        )
+
+        self.btn_confirmar_panel = ctk.CTkButton(
+            self.frame_panel_contenedor,
+            text="Confirmar panel",
+            height=38,
+            font=("Arial", 15, "bold"),
+            state="disabled",
+            command=self.confirmar_panel
+        )
+
+        self.btn_confirmar_panel.grid(
+            row=2,
+            column=0,
+            padx=20,
+            pady=(5, 10),
             sticky="ew"
         )
 
@@ -442,7 +543,7 @@ class RegistroDefectosSMT:
 
         self.lbl_frase = ctk.CTkLabel(
             self.frame_filtro_graficas,
-            text="Tus manos definen la calidad del producto; tu atención asegura el orgullo de nuestro trabajo.",
+            text="""Tus manos definen la calidad del producto; tu atención asegura el orgullo de nuestro trabajo.""",
             font=("Arial", 14, "bold", "italic"),
             text_color="#FFD166",
             justify="left",
@@ -555,7 +656,7 @@ class RegistroDefectosSMT:
             row=4,
             column=0,
             padx=18,
-            pady=(5, 5),
+            pady=2,
             sticky="w"
         )
 
@@ -565,7 +666,7 @@ class RegistroDefectosSMT:
         self.frame_fpy_modelos = ctk.CTkScrollableFrame(
             self.frame_graficas,
             # label_text="FPY POR MODELO",
-            label_font=("Arial", 10, "bold"),
+            # label_font=("Arial", 1, "bold"),
             corner_radius=14,
             fg_color="#252842",
             border_width=1,
@@ -578,7 +679,7 @@ class RegistroDefectosSMT:
             column=1,
             columnspan=3,
             padx=(8, 15),
-            pady=(5, 5),
+            pady=2,
             sticky="nsew"
         )
         # =========================================================
@@ -672,22 +773,26 @@ class RegistroDefectosSMT:
         return elementos
 
     @staticmethod
-    def leer_modelos_estandar(ruta):
+    def leer_configuracion_modelos(ruta):
         """
         Lee models.ini con el formato:
 
-        Modelo,Estandar
+        Modelo,Renglones,Columnas,NumeroParte
 
         Ejemplo:
-        ROUTER,10
-        PR20,15
+        Lion Mite,4,5,635125
 
         Retorna:
         {
-            "ROUTER": 10,
-            "PR20": 15
+            "Lion Mite": {
+                "renglones": 4,
+                "columnas": 5,
+                "numero_parte": "635125",
+                "total_pcb": 20
+            }
         }
         """
+
         modelos = {}
 
         if not os.path.exists(ruta):
@@ -700,7 +805,10 @@ class RegistroDefectosSMT:
                 encoding="utf-8-sig"
             ) as archivo:
 
-                for numero_linea, linea in enumerate(archivo, start=1):
+                for numero_linea, linea in enumerate(
+                    archivo,
+                    start=1
+                ):
                     linea = linea.strip()
 
                     if not linea:
@@ -711,7 +819,7 @@ class RegistroDefectosSMT:
 
                     partes = linea.split(",")
 
-                    if len(partes) != 2:
+                    if len(partes) != 4:
                         print(
                             f"Línea incorrecta en models.ini "
                             f"({numero_linea}): {linea}"
@@ -719,66 +827,65 @@ class RegistroDefectosSMT:
                         continue
 
                     modelo = partes[0].strip()
-                    estandar_texto = partes[1].strip()
+                    renglones_texto = partes[1].strip()
+                    columnas_texto = partes[2].strip()
+                    numero_parte = partes[3].strip()
 
                     if not modelo:
+                        print(
+                            f"Modelo vacío en línea {numero_linea}."
+                        )
                         continue
 
                     try:
-                        estandar = int(estandar_texto)
+                        renglones = int(renglones_texto)
+                        columnas = int(columnas_texto)
+
                     except ValueError:
                         print(
-                            f"Estándar incorrecto para {modelo}: "
-                            f"{estandar_texto}"
+                            f"Renglones o columnas incorrectos "
+                            f"para el modelo {modelo}."
                         )
                         continue
 
-                    if estandar <= 0:
+                    if renglones <= 0 or columnas <= 0:
                         print(
-                            f"El estándar de {modelo} debe ser "
-                            "mayor que cero."
+                            f"Los renglones y columnas de {modelo} "
+                            "deben ser mayores que cero."
                         )
                         continue
 
-                    modelos[modelo] = estandar
+                    if len(numero_parte) != 6:
+                        print(
+                            f"El número de parte de {modelo} debe "
+                            "contener exactamente 6 dígitos."
+                        )
+                        continue
+
+                    if not numero_parte.isdigit():
+                        print(
+                            f"El número de parte de {modelo} debe "
+                            "contener solamente números."
+                        )
+                        continue
+
+                    total_pcb = renglones * columnas
+
+                    modelos[modelo] = {
+                        "renglones": renglones,
+                        "columnas": columnas,
+                        "numero_parte": numero_parte,
+                        "total_pcb": total_pcb
+                    }
 
         except UnicodeDecodeError:
-            try:
-                with open(
-                    ruta,
-                    mode="r",
-                    encoding="latin-1"
-                ) as archivo:
-
-                    for linea in archivo:
-                        linea = linea.strip()
-
-                        if not linea or linea.startswith(("#", ";")):
-                            continue
-
-                        partes = linea.split(",")
-
-                        if len(partes) != 2:
-                            continue
-
-                        modelo = partes[0].strip()
-
-                        try:
-                            estandar = int(partes[1].strip())
-                        except ValueError:
-                            continue
-
-                        if modelo and estandar > 0:
-                            modelos[modelo] = estandar
-
-            except OSError as error:
-                messagebox.showerror(
-                    "Error de lectura",
-                    (
-                        "No fue posible leer models.ini.\n\n"
-                        f"{error}"
-                    )
+            messagebox.showerror(
+                "Codificación incorrecta",
+                (
+                    "No fue posible leer models.ini.\n\n"
+                    "Guarde el archivo con codificación UTF-8."
                 )
+            )
 
         except OSError as error:
             messagebox.showerror(
@@ -817,13 +924,19 @@ class RegistroDefectosSMT:
 
     def cargar_modelos(self):
         """
-        Carga los modelos y sus estándares desde models.ini.
+        Carga la configuración de modelos desde models.ini.
         """
-        self.estandares_modelos = self.leer_modelos_estandar(
-            self.archivo_modelos
+
+        self.configuracion_modelos = (
+            self.leer_configuracion_modelos(
+                self.archivo_modelos
+            )
         )
 
-        modelos = list(self.estandares_modelos.keys())
+        modelos = list(
+            self.configuracion_modelos.keys()
+        )
+
         modelo_actual = self.modelo_seleccionado.get()
 
         if modelos:
@@ -833,19 +946,27 @@ class RegistroDefectosSMT:
             )
 
             if modelo_actual in modelos:
-                self.modelo_seleccionado.set(modelo_actual)
+                self.modelo_seleccionado.set(
+                    modelo_actual
+                )
             else:
-                self.modelo_seleccionado.set(modelos[0])
+                self.modelo_seleccionado.set(
+                    modelos[0]
+                )
 
         else:
             self.combo_modelos.configure(
                 values=["Sin modelos"],
                 state="disabled"
             )
-            self.modelo_seleccionado.set("Sin modelos")
+
+            self.modelo_seleccionado.set(
+                "Sin modelos"
+            )
 
     def verificar_cambios_archivos(self):
-        """Verifica si los archivos defects.ini y models.ini han cambiado y actualiza la información."""
+        """Verifica si los archivos defects.ini y 
+        models.ini han cambiado y actualiza la información."""
 
         if self.cerrando_aplicacion:
             return
@@ -1489,7 +1610,7 @@ class RegistroDefectosSMT:
             row=0,
             column=0,
             padx=30,
-            pady=50,
+            pady=2,
             sticky="nsew"
         )
 
@@ -2368,7 +2489,7 @@ class RegistroDefectosSMT:
                 row=0,
                 column=columna,
                 padx=8,
-                pady=8,
+                pady=2,
                 sticky="nsew"
             )
 
@@ -2380,7 +2501,7 @@ class RegistroDefectosSMT:
         tarjeta = ctk.CTkFrame(
             self.frame_fpy_modelos,
             width=250,
-            height=230,
+            height=215,
             corner_radius=12,
             fg_color="#292C47",
             border_width=1,
@@ -2391,7 +2512,7 @@ class RegistroDefectosSMT:
             row=0,
             column=columna,
             padx=8,
-            pady=8,
+            pady=2,
             sticky="nsew"
         )
 
@@ -2409,7 +2530,7 @@ class RegistroDefectosSMT:
             row=0,
             column=0,
             padx=12,
-            pady=(10, 2)
+            pady=2
         )
 
         lbl_fpy = ctk.CTkLabel(
@@ -2423,7 +2544,7 @@ class RegistroDefectosSMT:
             row=1,
             column=0,
             padx=12,
-            pady=(2, 2)
+            pady=2
         )
 
         lbl_totales = ctk.CTkLabel(
@@ -2441,7 +2562,7 @@ class RegistroDefectosSMT:
             row=2,
             column=0,
             padx=12,
-            pady=(0, 5)
+            pady=2
         )
 
         barra_fpy = ctk.CTkProgressBar(
@@ -2457,7 +2578,7 @@ class RegistroDefectosSMT:
             row=3,
             column=0,
             padx=20,
-            pady=(3, 8),
+            pady=2,
             sticky="ew"
         )
 
@@ -2476,7 +2597,7 @@ class RegistroDefectosSMT:
             row=4,
             column=0,
             padx=12,
-            pady=(2, 3)
+            pady=2
         )
 
         lbl_top = ctk.CTkLabel(
@@ -2493,7 +2614,7 @@ class RegistroDefectosSMT:
             row=5,
             column=0,
             padx=15,
-            pady=(0, 10),
+            pady=2,
             sticky="ew"
         )
 
@@ -2527,6 +2648,2172 @@ class RegistroDefectosSMT:
             80,
             self.actualizar_dashboard_fecha
         )
+
+    def seleccionar_modelo(self, modelo):
+        """
+        Carga en memoria la configuración del modelo seleccionado.
+        """
+
+        if self.proceso_panel_activo:
+            messagebox.showwarning(
+                "Inspección en proceso",
+                (
+                    "No puede cambiar el modelo mientras exista "
+                    "una inspección en proceso."
+                )
+            )
+
+            if self.modelo_actual:
+                self.modelo_seleccionado.set(
+                    self.modelo_actual
+                )
+
+            return
+
+        modelo = modelo.strip()
+
+        if modelo not in self.configuracion_modelos:
+            self.modelo_actual = None
+            self.numero_parte_actual = ""
+            self.renglones_panel = 0
+            self.columnas_panel = 0
+            self.total_pcb_panel = 0
+            return
+
+        configuracion = self.configuracion_modelos[
+            modelo
+        ]
+
+        self.modelo_actual = modelo
+
+        self.numero_parte_actual = configuracion[
+            "numero_parte"
+        ]
+
+        self.renglones_panel = configuracion[
+            "renglones"
+        ]
+
+        self.columnas_panel = configuracion[
+            "columnas"
+        ]
+
+        self.total_pcb_panel = configuracion[
+            "total_pcb"
+        ]
+
+        # Reiniciar los datos del panel anterior
+        self.posiciones_defectuosas.clear()
+        self.botones_pcb.clear()
+
+        print(
+            f"Modelo: {self.modelo_actual} | "
+            f"Número de parte: {self.numero_parte_actual} | "
+            f"Configuración: "
+            f"{self.renglones_panel} x "
+            f"{self.columnas_panel} | "
+            f"Total PCB: {self.total_pcb_panel}"
+        )
+
+        self.mostrar_panel_modelo()
+
+    def mostrar_panel_modelo(self):
+        """
+        Dibuja la cuadrícula del modelo seleccionado.
+        """
+
+        if self.frame_panel_pcb is None:
+            return
+
+        for widget in self.frame_panel_pcb.winfo_children():
+            widget.destroy()
+
+        self.botones_pcb.clear()
+        self.posiciones_defectuosas.clear()
+
+        if not self.modelo_actual:
+            self.lbl_info_modelo.configure(
+                text="Seleccione un modelo"
+            )
+
+            self.btn_confirmar_panel.configure(
+                state="disabled"
+            )
+            return
+
+        self.lbl_info_modelo.configure(
+            text=(
+                f"Modelo: {self.modelo_actual}     "
+                f"Número de parte: {self.numero_parte_actual}     "
+                f"Configuración: "
+                f"{self.renglones_panel} × "
+                f"{self.columnas_panel}     "
+                f"Total PCB: {self.total_pcb_panel}"
+            )
+        )
+
+        for columna in range(self.columnas_panel):
+            self.frame_panel_pcb.grid_columnconfigure(
+                columna,
+                weight=1,
+                uniform="pcb"
+            )
+
+        numero_pcb = 1
+
+        for renglon in range(self.renglones_panel):
+            for columna in range(self.columnas_panel):
+
+                boton = ctk.CTkButton(
+                    self.frame_panel_pcb,
+                    text=f"PCB {numero_pcb}",
+                    width=115,
+                    height=58,
+                    corner_radius=10,
+                    font=("Arial", 15, "bold"),
+                    fg_color="#454B70",
+                    hover_color="#596083",
+                    command=lambda posicion=numero_pcb: (
+                        self.seleccionar_posicion_pcb(
+                            posicion
+                        )
+                    )
+                )
+
+                boton.grid(
+                    row=renglon,
+                    column=columna,
+                    padx=7,
+                    pady=7,
+                    sticky="nsew"
+                )
+
+                self.botones_pcb[numero_pcb] = boton
+                numero_pcb += 1
+
+        self.btn_confirmar_panel.configure(
+            state="normal"
+        )
+
+    def seleccionar_posicion_pcb(self, posicion):
+        """
+        Marca o desmarca una posición como PCB defectuosa.
+        """
+
+        if posicion in self.posiciones_defectuosas:
+
+            self.posiciones_defectuosas.pop(
+                posicion,
+                None
+            )
+
+            self.botones_pcb[posicion].configure(
+                fg_color="#454B70",
+                hover_color="#596083",
+                text=f"PCB {posicion}"
+            )
+
+        else:
+            self.posiciones_defectuosas[posicion] = {
+                "posicion": posicion,
+                "id_pcb": "",
+                "defectos": [],
+                "estado": "PENDIENTE_ID"
+            }
+
+            self.botones_pcb[posicion].configure(
+                fg_color="#D97706",
+                hover_color="#B45309",
+                text=(
+                    f"PCB {posicion}\n"
+                    "DEFECTO"
+                )
+            )
+
+    def confirmar_panel(self):
+        """
+        Confirma las posiciones defectuosas seleccionadas e inicia
+        el proceso de captura de ID.
+        """
+
+        if not self.modelo_actual:
+            messagebox.showwarning(
+                "Modelo requerido",
+                "Seleccione un modelo antes de confirmar el panel."
+            )
+            return
+
+        total_defectuosas = len(
+            self.posiciones_defectuosas
+        )
+
+        total_buenas = (
+            self.total_pcb_panel
+            - total_defectuosas
+        )
+
+        if total_defectuosas == 0:
+            mensaje_adicional = (
+                "\n\nNo se seleccionaron PCB defectuosas.\n"
+                "Todas las posiciones se registrarán como PASS."
+            )
+        else:
+            mensaje_adicional = (
+                "\n\nDespués de confirmar deberá capturar "
+                "el ID de cada PCB defectuosa."
+            )
+
+        respuesta = messagebox.askyesno(
+            "Confirmar panel",
+            (
+                f"Modelo: {self.modelo_actual}\n"
+                f"Número de parte: {self.numero_parte_actual}\n\n"
+                f"PCB totales: {self.total_pcb_panel}\n"
+                f"PCB buenas: {total_buenas}\n"
+                f"PCB defectuosas: {total_defectuosas}"
+                f"{mensaje_adicional}\n\n"
+                "¿Desea confirmar la selección?"
+            )
+        )
+
+        if not respuesta:
+            return
+
+        self.crear_panel_actual()
+        self.bloquear_seleccion_panel()
+
+        print(
+            "Posiciones defectuosas:",
+            sorted(
+                self.posiciones_defectuosas.keys()
+            )
+        )
+
+        if total_defectuosas == 0:
+            self.panel_actual["estado"] = "RESUMEN"
+            self.mostrar_resumen_provisional_panel()
+            return
+
+        self.abrir_captura_ids()
+
+    def crear_panel_actual(self):
+        """
+        Construye en memoria la información del panel confirmado.
+        """
+
+        posiciones = sorted(
+            self.posiciones_defectuosas.keys()
+        )
+
+        pcb_defectuosas = {}
+
+        for posicion in posiciones:
+            pcb_defectuosas[posicion] = {
+                "posicion": posicion,
+                "id_pcb": "",
+                "resultado": "FAIL",
+                "defectos": {},
+                "estado": "PENDIENTE_ID"
+            }
+
+        sesion = datetime.now().strftime(
+            "SES-%Y%m%d-%H%M%S"
+        )
+
+        sesion = (
+            f"{sesion}-"
+            f"{self.numero_parte_actual}"
+        )
+
+        self.panel_actual = {
+            "sesion": sesion,
+            "modelo": self.modelo_actual,
+            "numero_parte": self.numero_parte_actual,
+            "renglones": self.renglones_panel,
+            "columnas": self.columnas_panel,
+            "total_pcb": self.total_pcb_panel,
+            "total_buenas": (
+                self.total_pcb_panel
+                - len(posiciones)
+            ),
+            "total_defectuosas": len(posiciones),
+            "fecha_inicio": datetime.now().strftime(
+                "%d/%m/%Y %H:%M:%S"
+            ),
+            "pcb_defectuosas": pcb_defectuosas,
+            "estado": "CAPTURA_IDS"
+        }
+
+    def bloquear_seleccion_panel(self):
+        """
+        Bloquea el modelo y las posiciones después de confirmar.
+        """
+
+        self.proceso_panel_activo = True
+
+        self.combo_modelos.configure(
+            state="disabled"
+        )
+
+        self.btn_confirmar_panel.configure(
+            state="disabled"
+        )
+
+        for boton in self.botones_pcb.values():
+            boton.configure(
+                state="disabled"
+            )
+
+    def desbloquear_seleccion_panel(self):
+        """
+        Permite nuevamente seleccionar modelo y posiciones.
+        """
+
+        self.proceso_panel_activo = False
+
+        self.combo_modelos.configure(
+            state="readonly"
+        )
+
+        self.btn_confirmar_panel.configure(
+            state="normal"
+        )
+
+        for boton in self.botones_pcb.values():
+            boton.configure(
+                state="normal"
+            )
+
+    def mostrar_resumen_provisional_panel(self):
+        """
+        Muestra temporalmente el resumen de un panel sin defectos.
+        """
+
+        if not self.panel_actual:
+            return
+
+        total = self.panel_actual["total_pcb"]
+        buenas = self.panel_actual["total_buenas"]
+        defectuosas = self.panel_actual[
+            "total_defectuosas"
+        ]
+
+        if total > 0:
+            fpy = buenas / total * 100
+        else:
+            fpy = 0.0
+
+        respuesta = messagebox.askyesno(
+            "Finalizar panel",
+            (
+                f"Modelo: {self.panel_actual['modelo']}\n"
+                f"Número de parte: "
+                f"{self.panel_actual['numero_parte']}\n\n"
+                f"PCB inspeccionadas: {total}\n"
+                f"PCB buenas: {buenas}\n"
+                f"PCB defectuosas: {defectuosas}\n"
+                f"FPY: {fpy:.2f} %\n\n"
+                "Todas las PCB serán registradas como PASS.\n\n"
+                "¿Desea finalizar y guardar este panel?"
+            ),
+            parent=self.root
+        )
+
+        if respuesta:
+            self.finalizar_y_guardar_panel()
+
+    @staticmethod
+    def validar_escritura_id(valor):
+        """
+        Permite únicamente números y un máximo de 16 caracteres.
+        """
+
+        if valor == "":
+            return True
+
+        return valor.isdigit() and len(valor) <= 16
+
+    def abrir_captura_ids(self):
+        """
+        Abre una ventana modal para capturar los ID de todas las
+        PCB defectuosas.
+        """
+
+        if not self.panel_actual:
+            return
+
+        if (
+            self.ventana_captura_ids is not None
+            and self.ventana_captura_ids.winfo_exists()
+        ):
+            self.ventana_captura_ids.lift()
+            self.ventana_captura_ids.focus_force()
+            return
+
+        posiciones = sorted(
+            self.panel_actual[
+                "pcb_defectuosas"
+            ].keys()
+        )
+
+        cantidad_pcb = len(posiciones)
+
+        alto_ventana = min(
+            720,
+            max(390, 235 + cantidad_pcb * 62)
+        )
+
+        ventana = ctk.CTkToplevel(self.root)
+        self.ventana_captura_ids = ventana
+
+        ventana.title("Captura de ID de PCB defectuosas")
+        ventana.geometry(
+            f"720x{alto_ventana}"
+        )
+        ventana.minsize(650, 390)
+        ventana.transient(self.root)
+        ventana.grab_set()
+
+        ventana.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        ventana.grid_rowconfigure(
+            2,
+            weight=1
+        )
+
+        ventana.protocol(
+            "WM_DELETE_WINDOW",
+            self.cancelar_captura_ids
+        )
+
+        titulo = ctk.CTkLabel(
+            ventana,
+            text="CAPTURA DE ID DE PCB DEFECTUOSAS",
+            font=("Arial", 22, "bold"),
+            text_color="#FFFFFF"
+        )
+
+        titulo.grid(
+            row=0,
+            column=0,
+            padx=25,
+            pady=(20, 5)
+        )
+
+        texto_informacion = (
+            f"Modelo: {self.panel_actual['modelo']}     "
+            f"Número de parte: "
+            f"{self.panel_actual['numero_parte']}\n"
+            f"PCB defectuosas: {cantidad_pcb}"
+        )
+
+        lbl_informacion = ctk.CTkLabel(
+            ventana,
+            text=texto_informacion,
+            font=("Arial", 15, "bold"),
+            text_color="#BFC7EE",
+            justify="center"
+        )
+
+        lbl_informacion.grid(
+            row=1,
+            column=0,
+            padx=25,
+            pady=(5, 10)
+        )
+
+        frame_lista = ctk.CTkScrollableFrame(
+            ventana,
+            corner_radius=12,
+            fg_color="#252842",
+            label_text=(
+                "Escanee o capture los 16 dígitos "
+                "correspondientes"
+            ),
+            label_font=("Arial", 14, "bold")
+        )
+
+        frame_lista.grid(
+            row=2,
+            column=0,
+            padx=25,
+            pady=5,
+            sticky="nsew"
+        )
+
+        frame_lista.grid_columnconfigure(
+            1,
+            weight=1
+        )
+
+        self.entries_ids_pcb.clear()
+        self.labels_estado_ids.clear()
+
+        comando_validacion = (
+            ventana.register(
+                self.validar_escritura_id
+            ),
+            "%P"
+        )
+
+        for indice, posicion in enumerate(posiciones):
+
+            lbl_posicion = ctk.CTkLabel(
+                frame_lista,
+                text=f"PCB {posicion}",
+                width=90,
+                font=("Arial", 16, "bold"),
+                text_color="#FFFFFF"
+            )
+
+            lbl_posicion.grid(
+                row=indice,
+                column=0,
+                padx=(12, 8),
+                pady=8,
+                sticky="w"
+            )
+
+            variable_id = ctk.StringVar()
+
+            entry_id = ctk.CTkEntry(
+                frame_lista,
+                textvariable=variable_id,
+                height=38,
+                font=("Arial", 16),
+                justify="center",
+                placeholder_text="ID de 16 dígitos",
+                validate="key",
+                validatecommand=comando_validacion,
+                border_width=2,
+                border_color="#454B70"
+            )
+
+            entry_id.grid(
+                row=indice,
+                column=1,
+                padx=8,
+                pady=8,
+                sticky="ew"
+            )
+
+            lbl_estado = ctk.CTkLabel(
+                frame_lista,
+                text="Pendiente",
+                width=110,
+                font=("Arial", 13, "bold"),
+                text_color="#AEB4D0"
+            )
+
+            lbl_estado.grid(
+                row=indice,
+                column=2,
+                padx=(8, 12),
+                pady=8
+            )
+
+            self.entries_ids_pcb[posicion] = {
+                "variable": variable_id,
+                "entry": entry_id
+            }
+
+            self.labels_estado_ids[posicion] = (
+                lbl_estado
+            )
+
+            variable_id.trace_add(
+                "write",
+                lambda *args, p=posicion: (
+                    self.validar_id_en_tiempo_real(p)
+                )
+            )
+
+            entry_id.bind(
+                "<Return>",
+                lambda event, p=posicion: (
+                    self.enfocar_siguiente_id(p)
+                )
+            )
+
+        frame_botones = ctk.CTkFrame(
+            ventana,
+            fg_color="transparent"
+        )
+
+        frame_botones.grid(
+            row=3,
+            column=0,
+            padx=25,
+            pady=(10, 20),
+            sticky="ew"
+        )
+
+        frame_botones.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        frame_botones.grid_columnconfigure(
+            1,
+            weight=1
+        )
+
+        btn_cancelar = ctk.CTkButton(
+            frame_botones,
+            text="Cancelar",
+            height=42,
+            font=("Arial", 15, "bold"),
+            fg_color="#5B627E",
+            hover_color="#484E66",
+            command=self.cancelar_captura_ids
+        )
+
+        btn_cancelar.grid(
+            row=0,
+            column=0,
+            padx=(0, 8),
+            sticky="ew"
+        )
+
+        btn_continuar = ctk.CTkButton(
+            frame_botones,
+            text="Validar y continuar",
+            height=42,
+            font=("Arial", 15, "bold"),
+            command=self.confirmar_ids_pcb
+        )
+
+        btn_continuar.grid(
+            row=0,
+            column=1,
+            padx=(8, 0),
+            sticky="ew"
+        )
+
+        ventana.after(
+            100,
+            self.enfocar_primer_id
+        )
+
+    def validar_id_en_tiempo_real(self, posicion):
+        """
+        Cambia el estado visual del ID conforme se captura.
+        """
+
+        datos_entry = self.entries_ids_pcb.get(
+            posicion
+        )
+
+        if not datos_entry:
+            return
+
+        valor = datos_entry[
+            "variable"
+        ].get().strip()
+
+        entry = datos_entry["entry"]
+        lbl_estado = self.labels_estado_ids[
+            posicion
+        ]
+
+        if not valor:
+            entry.configure(
+                border_color="#454B70"
+            )
+
+            lbl_estado.configure(
+                text="Pendiente",
+                text_color="#AEB4D0"
+            )
+
+            return
+
+        if len(valor) < 16:
+            entry.configure(
+                border_color="#D97706"
+            )
+
+            lbl_estado.configure(
+                text=f"{len(valor)}/16",
+                text_color="#FBBF24"
+            )
+
+            return
+
+        if not valor.startswith(
+            self.numero_parte_actual
+        ):
+            entry.configure(
+                border_color="#DC4C64"
+            )
+
+            lbl_estado.configure(
+                text="Modelo incorrecto",
+                text_color="#FF6B81"
+            )
+
+            return
+
+        entry.configure(
+            border_color="#2EB872"
+        )
+
+        lbl_estado.configure(
+            text="Válido",
+            text_color="#6FE3A1"
+        )
+
+    def enfocar_primer_id(self):
+        """
+        Coloca el cursor en el primer ID pendiente.
+        """
+
+        if not self.entries_ids_pcb:
+            return
+
+        primera_posicion = sorted(
+            self.entries_ids_pcb.keys()
+        )[0]
+
+        entry = self.entries_ids_pcb[
+            primera_posicion
+        ]["entry"]
+
+        entry.focus_set()
+
+    def enfocar_siguiente_id(self, posicion_actual):
+        """
+        Al presionar Enter avanza al siguiente ID.
+        """
+
+        posiciones = sorted(
+            self.entries_ids_pcb.keys()
+        )
+
+        try:
+            indice_actual = posiciones.index(
+                posicion_actual
+            )
+        except ValueError:
+            return
+
+        siguiente_indice = indice_actual + 1
+
+        if siguiente_indice < len(posiciones):
+            siguiente_posicion = posiciones[
+                siguiente_indice
+            ]
+
+            siguiente_entry = self.entries_ids_pcb[
+                siguiente_posicion
+            ]["entry"]
+
+            siguiente_entry.focus_set()
+            siguiente_entry.select_range(
+                0,
+                "end"
+            )
+
+        else:
+            self.confirmar_ids_pcb()
+
+    def confirmar_ids_pcb(self):
+        """
+        Valida todos los ID y los guarda en panel_actual.
+        """
+
+        errores = []
+        ids_capturados = {}
+        posiciones_por_id = {}
+
+        for posicion in sorted(
+            self.entries_ids_pcb.keys()
+        ):
+            datos_entry = self.entries_ids_pcb[
+                posicion
+            ]
+
+            valor = datos_entry[
+                "variable"
+            ].get().strip()
+
+            entry = datos_entry["entry"]
+            lbl_estado = self.labels_estado_ids[
+                posicion
+            ]
+
+            if len(valor) != 16:
+                errores.append(
+                    f"PCB {posicion}: el ID debe "
+                    "contener 16 dígitos."
+                )
+
+                entry.configure(
+                    border_color="#DC4C64"
+                )
+
+                lbl_estado.configure(
+                    text="Longitud incorrecta",
+                    text_color="#FF6B81"
+                )
+
+                continue
+
+            if not valor.isdigit():
+                errores.append(
+                    f"PCB {posicion}: el ID debe "
+                    "contener solamente números."
+                )
+
+                entry.configure(
+                    border_color="#DC4C64"
+                )
+
+                lbl_estado.configure(
+                    text="ID incorrecto",
+                    text_color="#FF6B81"
+                )
+
+                continue
+
+            if not valor.startswith(
+                self.numero_parte_actual
+            ):
+                errores.append(
+                    f"PCB {posicion}: el ID no pertenece "
+                    f"al número de parte "
+                    f"{self.numero_parte_actual}."
+                )
+
+                entry.configure(
+                    border_color="#DC4C64"
+                )
+
+                lbl_estado.configure(
+                    text="Modelo incorrecto",
+                    text_color="#FF6B81"
+                )
+
+                continue
+
+            ids_capturados[posicion] = valor
+
+            if valor not in posiciones_por_id:
+                posiciones_por_id[valor] = []
+
+            posiciones_por_id[valor].append(
+                posicion
+            )
+
+        ids_repetidos = {
+            identificador: posiciones
+            for identificador, posiciones
+            in posiciones_por_id.items()
+            if len(posiciones) > 1
+        }
+
+        for identificador, posiciones in (
+            ids_repetidos.items()
+        ):
+            texto_posiciones = ", ".join(
+                f"PCB {posicion}"
+                for posicion in posiciones
+            )
+
+            errores.append(
+                f"ID repetido {identificador}: "
+                f"{texto_posiciones}."
+            )
+
+            for posicion in posiciones:
+                entry = self.entries_ids_pcb[
+                    posicion
+                ]["entry"]
+
+                lbl_estado = self.labels_estado_ids[
+                    posicion
+                ]
+
+                entry.configure(
+                    border_color="#DC4C64"
+                )
+
+                lbl_estado.configure(
+                    text="ID repetido",
+                    text_color="#FF6B81"
+                )
+
+        if errores:
+            texto_errores = "\n".join(
+                f"• {error}"
+                for error in errores[:10]
+            )
+
+            if len(errores) > 10:
+                texto_errores += (
+                    "\n• Existen más errores por corregir."
+                )
+
+            messagebox.showwarning(
+                "ID incorrectos",
+                (
+                    "Corrija los siguientes datos:\n\n"
+                    f"{texto_errores}"
+                ),
+                parent=self.ventana_captura_ids
+            )
+
+            self.enfocar_primer_id_invalido()
+            return
+
+        for posicion, identificador in (
+            ids_capturados.items()
+        ):
+            datos_pcb = self.panel_actual[
+                "pcb_defectuosas"
+            ][posicion]
+
+            datos_pcb["id_pcb"] = identificador
+            datos_pcb["estado"] = (
+                "PENDIENTE_DEFECTOS"
+            )
+
+        self.panel_actual["estado"] = (
+            "REGISTRO_DEFECTOS"
+        )
+
+        print("\nID validados:")
+
+        for posicion in sorted(
+            ids_capturados.keys()
+        ):
+            print(
+                f"PCB {posicion}: "
+                f"{ids_capturados[posicion]}"
+            )
+
+        self.cerrar_ventana_captura_ids()
+
+        self.iniciar_registro_defectos_panel()
+
+    def enfocar_primer_id_invalido(self):
+        """
+        Coloca el cursor en el primer ID que no sea válido.
+        """
+
+        for posicion in sorted(
+            self.entries_ids_pcb.keys()
+        ):
+            datos_entry = self.entries_ids_pcb[
+                posicion
+            ]
+
+            valor = datos_entry[
+                "variable"
+            ].get().strip()
+
+            if (
+                len(valor) != 16
+                or not valor.isdigit()
+                or not valor.startswith(
+                    self.numero_parte_actual
+                )
+            ):
+                entry = datos_entry["entry"]
+
+                entry.focus_set()
+                entry.select_range(
+                    0,
+                    "end"
+                )
+                return
+
+    def cancelar_captura_ids(self):
+        """
+        Cancela la captura y regresa a la selección del panel.
+        """
+
+        respuesta = messagebox.askyesno(
+            "Cancelar captura",
+            (
+                "¿Desea cancelar la captura de ID?\n\n"
+                "La selección de PCB defectuosas podrá "
+                "modificarse nuevamente."
+            ),
+            parent=self.ventana_captura_ids
+        )
+
+        if not respuesta:
+            return
+
+        self.panel_actual = None
+
+        self.cerrar_ventana_captura_ids()
+        self.desbloquear_seleccion_panel()
+
+    def cerrar_ventana_captura_ids(self):
+        """
+        Cierra y limpia las referencias de la ventana de ID.
+        """
+
+        if (
+            self.ventana_captura_ids is not None
+            and self.ventana_captura_ids.winfo_exists()
+        ):
+            try:
+                self.ventana_captura_ids.grab_release()
+            except tk.TclError:
+                pass
+
+            self.ventana_captura_ids.destroy()
+
+        self.ventana_captura_ids = None
+        self.entries_ids_pcb.clear()
+        self.labels_estado_ids.clear()
+
+    def iniciar_registro_defectos_panel(self):
+        """
+        Prepara el orden de las PCB defectuosas y abre la ventana
+        de registro de defectos.
+        """
+
+        if not self.panel_actual:
+            return
+
+        self.posiciones_pendientes_defectos = sorted(
+            self.panel_actual["pcb_defectuosas"].keys()
+        )
+
+        self.indice_pcb_defecto_actual = 0
+        self.abrir_ventana_registro_defectos()
+
+    def abrir_ventana_registro_defectos(self):
+        """
+        Abre una ventana modal para registrar los defectos
+        de cada PCB.
+        """
+
+        if not self.panel_actual:
+            return
+
+        if not self.posiciones_pendientes_defectos:
+            return
+
+        if (
+            self.ventana_registro_defectos is not None
+            and self.ventana_registro_defectos.winfo_exists()
+        ):
+            self.ventana_registro_defectos.lift()
+            self.ventana_registro_defectos.focus_force()
+            return
+
+        ventana = ctk.CTkToplevel(self.root)
+        self.ventana_registro_defectos = ventana
+
+        ventana.title("Registro de defectos por PCB")
+        ventana.geometry("820x690")
+        ventana.minsize(760, 620)
+        ventana.transient(self.root)
+        ventana.grab_set()
+
+        ventana.grid_columnconfigure(0, weight=1)
+        ventana.grid_rowconfigure(3, weight=1)
+
+        ventana.protocol(
+            "WM_DELETE_WINDOW",
+            self.cancelar_registro_defectos_panel
+        )
+
+        self.lbl_titulo_registro_pcb = ctk.CTkLabel(
+            ventana,
+            text="REGISTRO DE DEFECTOS",
+            font=("Arial", 23, "bold"),
+            text_color="#FFFFFF"
+        )
+
+        self.lbl_titulo_registro_pcb.grid(
+            row=0,
+            column=0,
+            padx=25,
+            pady=(20, 5)
+        )
+
+        self.lbl_info_registro_pcb = ctk.CTkLabel(
+            ventana,
+            text="",
+            font=("Arial", 16, "bold"),
+            text_color="#BFC7EE",
+            justify="center"
+        )
+
+        self.lbl_info_registro_pcb.grid(
+            row=1,
+            column=0,
+            padx=25,
+            pady=(5, 8)
+        )
+
+        self.barra_progreso_defectos = ctk.CTkProgressBar(
+            ventana,
+            height=14,
+            corner_radius=7
+        )
+
+        self.barra_progreso_defectos.grid(
+            row=2,
+            column=0,
+            padx=35,
+            pady=(5, 10),
+            sticky="ew"
+        )
+
+        frame_contenido = ctk.CTkFrame(
+            ventana,
+            corner_radius=12,
+            fg_color="#252842"
+        )
+
+        frame_contenido.grid(
+            row=3,
+            column=0,
+            padx=25,
+            pady=5,
+            sticky="nsew"
+        )
+
+        frame_contenido.grid_columnconfigure(0, weight=1)
+        frame_contenido.grid_rowconfigure(2, weight=1)
+
+        self.lbl_instruccion_defectos = ctk.CTkLabel(
+            frame_contenido,
+            text=(
+                "Seleccione un defecto, indique la cantidad "
+                "y agréguelo a la PCB."
+            ),
+            font=("Arial", 14),
+            text_color="#DDE2FF"
+        )
+
+        self.lbl_instruccion_defectos.grid(
+            row=0,
+            column=0,
+            padx=20,
+            pady=(15, 8)
+        )
+
+        frame_captura = ctk.CTkFrame(
+            frame_contenido,
+            fg_color="transparent"
+        )
+
+        frame_captura.grid(
+            row=1,
+            column=0,
+            padx=20,
+            pady=5,
+            sticky="ew"
+        )
+
+        frame_captura.grid_columnconfigure(0, weight=3)
+        frame_captura.grid_columnconfigure(1, weight=1)
+
+        self.defecto_pcb_seleccionado = ctk.StringVar(
+            value="Seleccione un defecto"
+        )
+
+        self.combo_defectos_pcb = ctk.CTkComboBox(
+            frame_captura,
+            variable=self.defecto_pcb_seleccionado,
+            values=self.lista_defectos,
+            state="readonly",
+            height=38,
+            font=("Arial", 15),
+            dropdown_font=("Arial", 14)
+        )
+
+        self.combo_defectos_pcb.grid(
+            row=0,
+            column=0,
+            padx=(0, 8),
+            sticky="ew"
+        )
+
+        self.cantidad_defecto_pcb = ctk.StringVar(value="1")
+
+        self.entry_cantidad_defecto_pcb = ctk.CTkEntry(
+            frame_captura,
+            textvariable=self.cantidad_defecto_pcb,
+            height=38,
+            justify="center",
+            font=("Arial", 15)
+        )
+
+        self.entry_cantidad_defecto_pcb.grid(
+            row=0,
+            column=1,
+            padx=8,
+            sticky="ew"
+        )
+
+        self.btn_agregar_defecto_pcb = ctk.CTkButton(
+            frame_captura,
+            text="Agregar defecto",
+            height=38,
+            font=("Arial", 14, "bold"),
+            command=self.agregar_defecto_pcb_actual
+        )
+
+        self.btn_agregar_defecto_pcb.grid(
+            row=0,
+            column=2,
+            padx=(8, 0)
+        )
+
+        self.frame_lista_defectos_pcb = ctk.CTkScrollableFrame(
+            frame_contenido,
+            corner_radius=10,
+            fg_color="#1F2238",
+            label_text="Defectos registrados en esta PCB",
+            label_font=("Arial", 14, "bold")
+        )
+
+        self.frame_lista_defectos_pcb.grid(
+            row=2,
+            column=0,
+            padx=20,
+            pady=10,
+            sticky="nsew"
+        )
+
+        self.frame_lista_defectos_pcb.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        frame_botones = ctk.CTkFrame(
+            ventana,
+            fg_color="transparent"
+        )
+
+        frame_botones.grid(
+            row=4,
+            column=0,
+            padx=25,
+            pady=(10, 20),
+            sticky="ew"
+        )
+
+        frame_botones.grid_columnconfigure(0, weight=1)
+        frame_botones.grid_columnconfigure(1, weight=1)
+
+        self.btn_cancelar_registro_defectos = ctk.CTkButton(
+            frame_botones,
+            text="Cancelar inspección",
+            height=42,
+            font=("Arial", 15, "bold"),
+            fg_color="#5B627E",
+            hover_color="#484E66",
+            command=self.cancelar_registro_defectos_panel
+        )
+
+        self.btn_cancelar_registro_defectos.grid(
+            row=0,
+            column=0,
+            padx=(0, 8),
+            sticky="ew"
+        )
+
+        self.btn_guardar_siguiente_pcb = ctk.CTkButton(
+            frame_botones,
+            text="Guardar y siguiente",
+            height=42,
+            font=("Arial", 15, "bold"),
+            command=self.guardar_defectos_pcb_actual
+        )
+
+        self.btn_guardar_siguiente_pcb.grid(
+            row=0,
+            column=1,
+            padx=(8, 0),
+            sticky="ew"
+        )
+
+        self.cargar_pcb_actual_en_ventana()
+
+    def cargar_pcb_actual_en_ventana(self):
+        """
+        Muestra la PCB correspondiente al índice actual.
+        """
+
+        total = len(self.posiciones_pendientes_defectos)
+
+        if total == 0:
+            return
+
+        if self.indice_pcb_defecto_actual >= total:
+            self.finalizar_captura_defectos_panel()
+            return
+
+        posicion = self.posiciones_pendientes_defectos[
+            self.indice_pcb_defecto_actual
+        ]
+
+        datos_pcb = self.panel_actual[
+            "pcb_defectuosas"
+        ][posicion]
+
+        numero_actual = self.indice_pcb_defecto_actual + 1
+
+        self.lbl_info_registro_pcb.configure(
+            text=(
+                f"PCB {numero_actual} de {total}\n"
+                f"Posición: PCB {posicion}     "
+                f"ID: {datos_pcb['id_pcb']}"
+            )
+        )
+
+        progreso = numero_actual / total
+        self.barra_progreso_defectos.set(progreso)
+
+        self.defectos_pcb_actual = dict(
+            datos_pcb.get("defectos", {})
+        )
+
+        self.defecto_pcb_seleccionado.set(
+            "Seleccione un defecto"
+        )
+
+        self.cantidad_defecto_pcb.set("1")
+
+        self.actualizar_lista_defectos_pcb()
+
+        if numero_actual == total:
+            self.btn_guardar_siguiente_pcb.configure(
+                text="Guardar y finalizar"
+            )
+        else:
+            self.btn_guardar_siguiente_pcb.configure(
+                text="Guardar y siguiente"
+            )
+
+    def agregar_defecto_pcb_actual(self):
+        """
+        Agrega o acumula un defecto en la PCB actual.
+        """
+
+        defecto = self.defecto_pcb_seleccionado.get().strip()
+        cantidad_texto = self.cantidad_defecto_pcb.get().strip()
+
+        if (
+            not defecto
+            or defecto == "Seleccione un defecto"
+        ):
+            messagebox.showwarning(
+                "Defecto requerido",
+                "Seleccione un defecto.",
+                parent=self.ventana_registro_defectos
+            )
+            return
+
+        try:
+            cantidad = int(cantidad_texto)
+        except ValueError:
+            messagebox.showwarning(
+                "Cantidad incorrecta",
+                "La cantidad debe ser un número entero.",
+                parent=self.ventana_registro_defectos
+            )
+            return
+
+        if cantidad <= 0:
+            messagebox.showwarning(
+                "Cantidad incorrecta",
+                "La cantidad debe ser mayor que cero.",
+                parent=self.ventana_registro_defectos
+            )
+            return
+
+        cantidad_actual = self.defectos_pcb_actual.get(
+            defecto,
+            0
+        )
+
+        self.defectos_pcb_actual[defecto] = (
+            cantidad_actual + cantidad
+        )
+
+        self.defecto_pcb_seleccionado.set(
+            "Seleccione un defecto"
+        )
+        self.cantidad_defecto_pcb.set("1")
+
+        self.actualizar_lista_defectos_pcb()
+
+    def actualizar_lista_defectos_pcb(self):
+        """
+        Actualiza visualmente los defectos agregados a la PCB.
+        """
+
+        for widget in (
+            self.frame_lista_defectos_pcb.winfo_children()
+        ):
+            widget.destroy()
+
+        self.filas_defectos_pcb.clear()
+
+        if not self.defectos_pcb_actual:
+            lbl_vacio = ctk.CTkLabel(
+                self.frame_lista_defectos_pcb,
+                text="Aún no se han agregado defectos.",
+                font=("Arial", 14),
+                text_color="#AEB4D0"
+            )
+
+            lbl_vacio.grid(
+                row=0,
+                column=0,
+                padx=15,
+                pady=20
+            )
+            return
+
+        for fila, (defecto, cantidad) in enumerate(
+            self.defectos_pcb_actual.items()
+        ):
+            frame_fila = ctk.CTkFrame(
+                self.frame_lista_defectos_pcb,
+                fg_color="#30344F",
+                corner_radius=8
+            )
+
+            frame_fila.grid(
+                row=fila,
+                column=0,
+                padx=8,
+                pady=5,
+                sticky="ew"
+            )
+
+            frame_fila.grid_columnconfigure(0, weight=1)
+
+            lbl_defecto = ctk.CTkLabel(
+                frame_fila,
+                text=defecto,
+                font=("Arial", 14, "bold"),
+                text_color="#FFFFFF",
+                anchor="w"
+            )
+
+            lbl_defecto.grid(
+                row=0,
+                column=0,
+                padx=12,
+                pady=10,
+                sticky="ew"
+            )
+
+            lbl_cantidad = ctk.CTkLabel(
+                frame_fila,
+                text=f"Cantidad: {cantidad}",
+                width=115,
+                font=("Arial", 14, "bold"),
+                text_color="#6FE3A1"
+            )
+
+            lbl_cantidad.grid(
+                row=0,
+                column=1,
+                padx=8,
+                pady=10
+            )
+
+            btn_restar = ctk.CTkButton(
+                frame_fila,
+                text="−",
+                width=38,
+                height=30,
+                font=("Arial", 18, "bold"),
+                fg_color="#D97706",
+                hover_color="#B45309",
+                command=lambda d=defecto: (
+                    self.restar_defecto_pcb(d)
+                )
+            )
+
+            btn_restar.grid(
+                row=0,
+                column=2,
+                padx=4
+            )
+
+            btn_eliminar = ctk.CTkButton(
+                frame_fila,
+                text="Eliminar",
+                width=80,
+                height=30,
+                font=("Arial", 13, "bold"),
+                fg_color="#C24155",
+                hover_color="#9F3345",
+                command=lambda d=defecto: (
+                    self.eliminar_defecto_pcb(d)
+                )
+            )
+
+            btn_eliminar.grid(
+                row=0,
+                column=3,
+                padx=(4, 10)
+            )
+
+            self.filas_defectos_pcb[defecto] = (
+                frame_fila
+            )
+
+    def restar_defecto_pcb(self, defecto):
+        """
+        Resta una unidad al defecto indicado.
+        """
+
+        if defecto not in self.defectos_pcb_actual:
+            return
+
+        nueva_cantidad = (
+            self.defectos_pcb_actual[defecto] - 1
+        )
+
+        if nueva_cantidad <= 0:
+            self.defectos_pcb_actual.pop(
+                defecto,
+                None
+            )
+        else:
+            self.defectos_pcb_actual[defecto] = (
+                nueva_cantidad
+            )
+
+        self.actualizar_lista_defectos_pcb()
+
+    def eliminar_defecto_pcb(self, defecto):
+        """
+        Elimina completamente un defecto de la PCB actual.
+        """
+
+        self.defectos_pcb_actual.pop(
+            defecto,
+            None
+        )
+
+        self.actualizar_lista_defectos_pcb()
+
+    def guardar_defectos_pcb_actual(self):
+        """
+        Guarda en memoria los defectos de la PCB actual.
+        """
+
+        if not self.defectos_pcb_actual:
+            messagebox.showwarning(
+                "Defecto requerido",
+                (
+                    "La PCB fue seleccionada como defectuosa.\n\n"
+                    "Debe registrar al menos un defecto."
+                ),
+                parent=self.ventana_registro_defectos
+            )
+            return
+
+        posicion = self.posiciones_pendientes_defectos[
+            self.indice_pcb_defecto_actual
+        ]
+
+        datos_pcb = self.panel_actual[
+            "pcb_defectuosas"
+        ][posicion]
+
+        datos_pcb["defectos"] = dict(
+            self.defectos_pcb_actual
+        )
+
+        datos_pcb["cantidad_defectos"] = sum(
+            self.defectos_pcb_actual.values()
+        )
+
+        datos_pcb["estado"] = "COMPLETADA"
+
+        if posicion in self.botones_pcb:
+            self.botones_pcb[posicion].configure(
+                text=(
+                    f"PCB {posicion}\n"
+                    f"{datos_pcb['cantidad_defectos']} DEF."
+                ),
+                fg_color="#C24155",
+                hover_color="#9F3345"
+            )
+
+        self.indice_pcb_defecto_actual += 1
+
+        if (
+            self.indice_pcb_defecto_actual
+            >= len(self.posiciones_pendientes_defectos)
+        ):
+            self.finalizar_captura_defectos_panel()
+            return
+
+        self.cargar_pcb_actual_en_ventana()
+
+    def finalizar_captura_defectos_panel(self):
+        """
+        Finaliza la captura de defectos y muestra un resumen
+        provisional.
+        """
+
+        self.panel_actual["estado"] = "RESUMEN"
+
+        total_defectos = 0
+
+        for datos_pcb in self.panel_actual[
+            "pcb_defectuosas"
+        ].values():
+            total_defectos += datos_pcb.get(
+                "cantidad_defectos",
+                0
+            )
+
+        self.panel_actual[
+            "total_defectos"
+        ] = total_defectos
+
+        self.cerrar_ventana_registro_defectos()
+
+        self.mostrar_resumen_panel_con_defectos()
+
+    def mostrar_resumen_panel_con_defectos(self):
+        """
+        Muestra el resumen y solicita confirmar el guardado.
+        """
+
+        if not self.panel_actual:
+            return
+
+        total = self.panel_actual["total_pcb"]
+        buenas = self.panel_actual["total_buenas"]
+
+        defectuosas = self.panel_actual[
+            "total_defectuosas"
+        ]
+
+        total_defectos = self.panel_actual.get(
+            "total_defectos",
+            0
+        )
+
+        fpy = (
+            buenas / total * 100
+            if total > 0
+            else 0.0
+        )
+
+        detalle_pcb = []
+
+        for posicion, datos_pcb in sorted(
+            self.panel_actual[
+                "pcb_defectuosas"
+            ].items()
+        ):
+            detalle_pcb.append(
+                (
+                    f"PCB {posicion} | "
+                    f"{datos_pcb['id_pcb']} | "
+                    f"{datos_pcb.get('cantidad_defectos', 0)} "
+                    "defecto(s)"
+                )
+            )
+
+        texto_detalle = "\n".join(
+            detalle_pcb
+        )
+
+        respuesta = messagebox.askyesno(
+            "Finalizar panel",
+            (
+                f"Modelo: {self.panel_actual['modelo']}\n"
+                f"Número de parte: "
+                f"{self.panel_actual['numero_parte']}\n\n"
+                f"PCB inspeccionadas: {total}\n"
+                f"PCB buenas: {buenas}\n"
+                f"PCB defectuosas: {defectuosas}\n"
+                f"Defectos encontrados: {total_defectos}\n"
+                f"FPY: {fpy:.2f} %\n\n"
+                f"{texto_detalle}\n\n"
+                "¿Desea finalizar y guardar este panel?"
+            ),
+            parent=self.root
+        )
+
+        if not respuesta:
+            return
+
+        self.finalizar_y_guardar_panel()
+
+    def cerrar_ventana_registro_defectos(self):
+        """
+        Cierra la ventana de registro de defectos.
+        """
+
+        if (
+            self.ventana_registro_defectos is not None
+            and self.ventana_registro_defectos.winfo_exists()
+        ):
+            try:
+                self.ventana_registro_defectos.grab_release()
+            except tk.TclError:
+                pass
+
+            self.ventana_registro_defectos.destroy()
+
+        self.ventana_registro_defectos = None
+        self.defectos_pcb_actual.clear()
+        self.filas_defectos_pcb.clear()
+
+    def cancelar_registro_defectos_panel(self):
+        """
+        Cancela completamente la inspección actual.
+        """
+
+        respuesta = messagebox.askyesno(
+            "Cancelar inspección",
+            (
+                "¿Desea cancelar toda la inspección actual?\n\n"
+                "Los ID y defectos capturados se perderán."
+            ),
+            parent=self.ventana_registro_defectos
+        )
+
+        if not respuesta:
+            return
+
+        self.cerrar_ventana_registro_defectos()
+
+        self.panel_actual = None
+        self.posiciones_pendientes_defectos.clear()
+        self.indice_pcb_defecto_actual = 0
+
+        self.desbloquear_seleccion_panel()
+
+    def obtener_encabezados_log_pcb(self):
+        """
+        Retorna los encabezados del nuevo archivo por PCB.
+        """
+
+        columnas_fijas = [
+            "Sesion",
+            "Modelo",
+            "NumeroParte",
+            "Posicion",
+            "Renglon",
+            "Columna",
+            "ID_PCB",
+            "Resultado",
+            "Defectos",
+            "Fecha/Hora"
+        ]
+
+        return columnas_fijas + list(
+            self.lista_defectos
+        )
+
+    def obtener_coordenadas_posicion(self, posicion):
+        """
+        Convierte el número de posición en renglón y columna.
+
+        La numeración comienza en 1.
+        """
+
+        if self.columnas_panel <= 0:
+            return 0, 0
+
+        renglon = (
+            (posicion - 1)
+            // self.columnas_panel
+        ) + 1
+
+        columna = (
+            (posicion - 1)
+            % self.columnas_panel
+        ) + 1
+
+        return renglon, columna
+
+    def asegurar_encabezados_log_pcb(self):
+        """
+        Crea LogFilePCB.csv o agrega nuevas columnas de defectos
+        conservando los registros existentes.
+        """
+
+        encabezados_requeridos = (
+            self.obtener_encabezados_log_pcb()
+        )
+
+        if not os.path.exists(self.archivo_log_pcb):
+            return encabezados_requeridos
+
+        if os.path.getsize(self.archivo_log_pcb) == 0:
+            return encabezados_requeridos
+
+        with open(
+            self.archivo_log_pcb,
+            mode="r",
+            newline="",
+            encoding="utf-8-sig"
+        ) as archivo:
+
+            lector = csv.DictReader(archivo)
+            encabezados_actuales = lector.fieldnames or []
+            registros = list(lector)
+
+        columnas_fijas = [
+            "Sesion",
+            "Modelo",
+            "NumeroParte",
+            "Posicion",
+            "Renglon",
+            "Columna",
+            "ID_PCB",
+            "Resultado",
+            "Defectos",
+            "Fecha/Hora"
+        ]
+
+        defectos_actuales = [
+            encabezado
+            for encabezado in encabezados_actuales
+            if encabezado not in columnas_fijas
+        ]
+
+        defectos_finales = defectos_actuales.copy()
+
+        for defecto in self.lista_defectos:
+            if defecto not in defectos_finales:
+                defectos_finales.append(defecto)
+
+        encabezados_finales = (
+            columnas_fijas
+            + defectos_finales
+        )
+
+        if encabezados_actuales == encabezados_finales:
+            return encabezados_finales
+
+        archivo_temporal = (
+            self.archivo_log_pcb
+            + ".tmp"
+        )
+
+        with open(
+            archivo_temporal,
+            mode="w",
+            newline="",
+            encoding="utf-8-sig"
+        ) as archivo:
+
+            escritor = csv.DictWriter(
+                archivo,
+                fieldnames=encabezados_finales
+            )
+
+            escritor.writeheader()
+
+            for registro in registros:
+                fila = {}
+
+                for encabezado in encabezados_finales:
+                    valor = registro.get(
+                        encabezado,
+                        ""
+                    )
+
+                    if (
+                        encabezado not in columnas_fijas
+                        and valor == ""
+                    ):
+                        valor = 0
+
+                    fila[encabezado] = valor
+
+                escritor.writerow(fila)
+
+        os.replace(
+            archivo_temporal,
+            self.archivo_log_pcb
+        )
+
+        return encabezados_finales
+
+    def construir_filas_panel_actual(self):
+        """
+        Crea una fila por cada posición del panel.
+        """
+
+        if not self.panel_actual:
+            return []
+
+        filas = []
+
+        fecha_hora = datetime.now().strftime(
+            "%d/%m/%Y %H:%M:%S"
+        )
+
+        pcb_defectuosas = self.panel_actual[
+            "pcb_defectuosas"
+        ]
+
+        for posicion in range(
+            1,
+            self.panel_actual["total_pcb"] + 1
+        ):
+            renglon, columna = (
+                self.obtener_coordenadas_posicion(
+                    posicion
+                )
+            )
+
+            cantidades_defectos = {
+                defecto: 0
+                for defecto in self.lista_defectos
+            }
+
+            if posicion in pcb_defectuosas:
+                datos_pcb = pcb_defectuosas[
+                    posicion
+                ]
+
+                resultado = "FAIL"
+                id_pcb = datos_pcb["id_pcb"]
+
+                defectos_pcb = datos_pcb.get(
+                    "defectos",
+                    {}
+                )
+
+                for defecto, cantidad in (
+                    defectos_pcb.items()
+                ):
+                    cantidades_defectos[
+                        defecto
+                    ] = cantidad
+
+                total_defectos = sum(
+                    defectos_pcb.values()
+                )
+
+            else:
+                resultado = "PASS"
+                id_pcb = ""
+                total_defectos = 0
+
+            fila = {
+                "Sesion": self.panel_actual[
+                    "sesion"
+                ],
+                "Modelo": self.panel_actual[
+                    "modelo"
+                ],
+                "NumeroParte": self.panel_actual[
+                    "numero_parte"
+                ],
+                "Posicion": f"PCB {posicion}",
+                "Renglon": renglon,
+                "Columna": columna,
+                "ID_PCB": id_pcb,
+                "Resultado": resultado,
+                "Defectos": total_defectos,
+                "Fecha/Hora": fecha_hora
+            }
+
+            fila.update(
+                cantidades_defectos
+            )
+
+            filas.append(fila)
+
+        return filas
+
+    def guardar_panel_actual_csv(self):
+        """
+        Guarda todas las posiciones del panel en una sola operación.
+        """
+        sesion = self.panel_actual["sesion"]
+
+        if self.sesion_ya_registrada(sesion):
+            messagebox.showerror(
+                "Panel duplicado",
+                (
+                    "Esta sesión ya fue registrada.\n\n"
+                    f"Sesión: {sesion}"
+                )
+            )
+            return False
+
+        if not self.panel_actual:
+            return False
+
+        if self.guardando_panel:
+            return False
+
+        self.guardando_panel = True
+
+        try:
+            encabezados = (
+                self.asegurar_encabezados_log_pcb()
+            )
+
+            filas = (
+                self.construir_filas_panel_actual()
+            )
+
+            if not filas:
+                messagebox.showerror(
+                    "Error de guardado",
+                    "No existen registros para guardar."
+                )
+                return False
+
+            archivo_existe = (
+                os.path.exists(self.archivo_log_pcb)
+                and os.path.getsize(
+                    self.archivo_log_pcb
+                ) > 0
+            )
+
+            with open(
+                self.archivo_log_pcb,
+                mode="a",
+                newline="",
+                encoding="utf-8-sig"
+            ) as archivo:
+
+                escritor = csv.DictWriter(
+                    archivo,
+                    fieldnames=encabezados
+                )
+
+                if not archivo_existe:
+                    escritor.writeheader()
+
+                escritor.writerows(filas)
+
+            return True
+
+        except PermissionError:
+            messagebox.showerror(
+                "Archivo en uso",
+                (
+                    "No fue posible guardar el panel.\n\n"
+                    "Cierre LogFilePCB.csv si está abierto "
+                    "en Excel u otro programa."
+                )
+            )
+
+            return False
+
+        except OSError as error:
+            messagebox.showerror(
+                "Error de guardado",
+                (
+                    "No fue posible guardar el panel.\n\n"
+                    f"{error}"
+                )
+            )
+
+            return False
+
+        finally:
+            self.guardando_panel = False
+
+    def sesion_ya_registrada(self, sesion):
+        """
+        Verifica si una sesión ya existe en LogFilePCB.csv.
+        """
+
+        if not os.path.exists(self.archivo_log_pcb):
+            return False
+
+        if os.path.getsize(self.archivo_log_pcb) == 0:
+            return False
+
+        try:
+            with open(
+                self.archivo_log_pcb,
+                mode="r",
+                newline="",
+                encoding="utf-8-sig"
+            ) as archivo:
+
+                lector = csv.DictReader(archivo)
+
+                for fila in lector:
+                    if fila.get("Sesion", "") == sesion:
+                        return True
+
+        except OSError:
+            return False
+
+        return False
+
+    def finalizar_y_guardar_panel(self):
+        """
+        Guarda el panel, actualiza la interfaz y prepara
+        una nueva inspección.
+        """
+
+        guardado = self.guardar_panel_actual_csv()
+
+        if not guardado:
+            return
+
+        sesion = self.panel_actual["sesion"]
+        total = self.panel_actual["total_pcb"]
+        defectuosas = self.panel_actual[
+            "total_defectuosas"
+        ]
+
+        messagebox.showinfo(
+            "Panel guardado",
+            (
+                "El panel se guardó correctamente.\n\n"
+                f"Sesión: {sesion}\n"
+                f"PCB registradas: {total}\n"
+                f"PCB defectuosas: {defectuosas}"
+            ),
+            parent=self.root
+        )
+
+        self.reiniciar_inspeccion_panel()
+
+    def reiniciar_inspeccion_panel(self):
+        """
+        Limpia la inspección terminada y deja listo el mismo modelo
+        para iniciar otro panel.
+        """
+
+        self.panel_actual = None
+        self.proceso_panel_activo = False
+
+        self.posiciones_defectuosas.clear()
+        self.posiciones_pendientes_defectos.clear()
+        self.defectos_pcb_actual.clear()
+
+        self.indice_pcb_defecto_actual = 0
+
+        self.combo_modelos.configure(
+            state="readonly"
+        )
+
+        self.mostrar_panel_modelo()
+
+        self.solicitar_actualizacion_dashboard()
 
 
 if __name__ == "__main__":
