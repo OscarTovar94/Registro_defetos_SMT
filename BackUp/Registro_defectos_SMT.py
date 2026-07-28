@@ -56,6 +56,11 @@ class RegistroDefectosSMT:
         self.archivo_modelos = "C:/Registro_defetos_SMT/Settings/models.ini"
         self.archivo_log = "C:/Registro_defetos_SMT/LogFile/LogFile.csv"
 
+        os.makedirs(
+            os.path.dirname(self.archivo_log),
+            exist_ok=True
+        )
+
         # Variables
         self.defecto_seleccionado = ctk.StringVar(value="")
         self.modelo_seleccionado = ctk.StringVar(value="")
@@ -72,6 +77,10 @@ class RegistroDefectosSMT:
         self.canvas_pareto = None
         self.fig_pareto = None
         self.ax_pareto = None
+        self.tarjetas_modelos = {}
+        self.lbl_sin_modelos = None
+        self.dashboard_actualizando = False
+        self.ax_pareto_porcentaje = None
 
         self.root.protocol(
             "WM_DELETE_WINDOW",
@@ -114,17 +123,19 @@ class RegistroDefectosSMT:
         self.frame_header.grid_columnconfigure(2, weight=1)
         self.frame_header.grid_rowconfigure(0, weight=0)
 
-        logo = ctk.CTkImage(
+        self.logo = ctk.CTkImage(
             light_image=Image.open(
-                "C:/Registro_defetos_SMT/Image/elrad_image.png"),
+                "C:/Registro_defetos_SMT/Image/elrad_image.png"
+            ),
             dark_image=Image.open(
-                "C:/Registro_defetos_SMT/Image/elrad_image.png"),
+                "C:/Registro_defetos_SMT/Image/elrad_image.png"
+            ),
             size=(55, 55)
         )
 
         self.lbl_logo = ctk.CTkLabel(
             self.frame_header,
-            image=logo,
+            image=self.logo,
             text=""
         )
         self.lbl_logo.grid(row=0, column=0, padx=20, pady=5, sticky="w")
@@ -258,7 +269,7 @@ class RegistroDefectosSMT:
             self.frame_registro,
             fg_color="#1F2238",
             corner_radius=14,
-            height=100
+            height=30
         )
 
         self.frame_cantidades.grid(
@@ -424,7 +435,7 @@ class RegistroDefectosSMT:
 
         self.selector_fecha.bind(
             "<<DateEntrySelected>>",
-            lambda evento: self.actualizar_dashboard_fecha()
+            lambda evento: self.solicitar_actualizacion_dashboard()
         )
 
         self.lbl_frase = ctk.CTkLabel(
@@ -450,7 +461,7 @@ class RegistroDefectosSMT:
             width=120,
             height=30,
             font=("Arial", 12, "bold"),
-            command=self.actualizar_dashboard_fecha
+            command=self.solicitar_actualizacion_dashboard
         )
 
         self.btn_actualizar_fpy.grid(
@@ -607,9 +618,7 @@ class RegistroDefectosSMT:
         self.frame_pareto_global.grid_rowconfigure(1, weight=0)
         self.frame_pareto_global.grid_columnconfigure(0, weight=1)
 
-        self.fig_pareto = None
-        self.ax_pareto = None
-        self.canvas_pareto = None
+        self.inicializar_pareto()
 
     @staticmethod
     def leer_lista_archivo(ruta):
@@ -987,7 +996,7 @@ class RegistroDefectosSMT:
         if not guardado:
             return
 
-        self.actualizar_dashboard_fecha()
+        self.solicitar_actualizacion_dashboard()
         self.defectos_seleccionados.clear()
         self.actualizar_campos_cantidades()
 
@@ -1100,16 +1109,16 @@ class RegistroDefectosSMT:
 
                         totales_defectos[defecto] += cantidad
 
-                    top_3 = sorted(
-                        (
-                            (defecto, cantidad)
-                            for defecto, cantidad
-                            in totales_defectos.items()
-                            if cantidad > 0
-                        ),
-                        key=lambda x: x[1],
-                        reverse=True
-                    )[:3]
+                top_3 = sorted(
+                    (
+                        (defecto, cantidad)
+                        for defecto, cantidad
+                        in totales_defectos.items()
+                        if cantidad > 0
+                    ),
+                    key=lambda x: x[1],
+                    reverse=True
+                )[:3]
 
             if registros_encontrados == 0 or estandar_total <= 0:
                 self.mostrar_fpy_sin_datos(
@@ -1171,7 +1180,8 @@ class RegistroDefectosSMT:
             )
 
     def mostrar_fpy_sin_datos(self, mensaje):
-        """muestra un mensaje cuando no hay datos para calcular el FPY."""
+        """Muestra un mensaje cuando no hay datos para calcular el FPY."""
+
         self.lbl_valor_fpy.configure(
             text="0.00 %",
             text_color="#8F96B8"
@@ -1179,6 +1189,10 @@ class RegistroDefectosSMT:
 
         self.lbl_detalle_fpy.configure(
             text=mensaje
+        )
+
+        self.lbl_top_fpy.configure(
+            text="Sin defectos registrados"
         )
 
     def aplicar_color_fpy(self, fpy):
@@ -1197,21 +1211,26 @@ class RegistroDefectosSMT:
         )
 
     def actualizar_dashboard_fecha(self):
-        """Actualiza el dashboard de FPY y Pareto para la fecha seleccionada."""
-
+        """
+        Actualiza una sola vez todo el dashboard.
+        """
         if self.cerrando_aplicacion:
             return
 
-        try:
-            if not self.root.winfo_exists():
-                return
+        self.after_dashboard = None
 
+        if self.dashboard_actualizando:
+            return
+
+        self.dashboard_actualizando = True
+
+        try:
             self.calcular_fpy_total()
             self.calcular_fpy_por_modelo()
             self.actualizar_pareto_global()
 
-        except tk.TclError:
-            pass
+        finally:
+            self.dashboard_actualizando = False
 
     def calcular_fpy_por_modelo(self):
         """
@@ -1223,9 +1242,8 @@ class RegistroDefectosSMT:
         para cada modelo.
         """
 
-        # Limpiar las tarjetas anteriores
-        for widget in self.frame_fpy_modelos.winfo_children():
-            widget.destroy()
+        for datos_tarjeta in self.tarjetas_modelos.values():
+            datos_tarjeta["frame"].grid_remove()
 
         if not os.path.exists(self.archivo_log):
             self.mostrar_sin_modelos(
@@ -1349,6 +1367,9 @@ class RegistroDefectosSMT:
                 )
                 return
 
+            if self.lbl_sin_modelos is not None:
+                self.lbl_sin_modelos.grid_remove()
+
             # Crear una tarjeta para cada modelo con registros
             for columna, modelo in enumerate(datos_modelos):
                 datos = datos_modelos[modelo]
@@ -1395,7 +1416,7 @@ class RegistroDefectosSMT:
                 else:
                     top_3_defectos = []
 
-                self.crear_tarjeta_fpy_modelo(
+                self.actualizar_tarjeta_fpy_modelo(
                     modelo=modelo,
                     fpy=fpy,
                     estandar=estandar_total,
@@ -1422,151 +1443,6 @@ class RegistroDefectosSMT:
                 )
             )
 
-    def crear_tarjeta_fpy_modelo(
-        self,
-        modelo,
-        fpy,
-        estandar,
-        defectos,
-        top_3_defectos,
-        columna
-    ):
-        """
-        Crea una tarjeta de FPY para un modelo y muestra
-        sus tres defectos principales.
-        """
-
-        if fpy >= 98:
-            color_fpy = "#6FE3A1"
-
-        elif fpy >= 95:
-            color_fpy = "#FFD166"
-
-        else:
-            color_fpy = "#FF6B6B"
-
-        tarjeta = ctk.CTkFrame(
-            self.frame_fpy_modelos,
-            width=250,
-            height=230,
-            corner_radius=14,
-            fg_color="#292C47",
-            border_width=1,
-            border_color="#454B70"
-        )
-
-        tarjeta.grid(
-            row=0,
-            column=columna,
-            padx=8,
-            pady=5,
-            sticky="nsew"
-        )
-
-        tarjeta.grid_propagate(False)
-        tarjeta.grid_columnconfigure(0, weight=1)
-
-        lbl_modelo = ctk.CTkLabel(
-            tarjeta,
-            text=modelo,
-            font=("Arial", 20, "bold"),
-            text_color="#DDE2FF"
-        )
-
-        lbl_modelo.grid(
-            row=0,
-            column=0,
-            padx=10,
-            pady=2
-        )
-
-        lbl_fpy = ctk.CTkLabel(
-            tarjeta,
-            text=f"{fpy:.2f} %",
-            font=("Arial", 35, "bold"),
-            text_color=color_fpy
-        )
-
-        lbl_fpy.grid(
-            row=1,
-            column=0,
-            padx=10,
-            pady=2
-        )
-
-        lbl_totales = ctk.CTkLabel(
-            tarjeta,
-            text=(
-                f"Producción: {estandar}\n"
-                f"Defectos: {defectos}"
-            ),
-            font=("Arial", 14),
-            text_color="#AEB4D0",
-            justify="center"
-        )
-
-        lbl_totales.grid(
-            row=2,
-            column=0,
-            padx=10,
-            pady=2
-        )
-
-        barra_fpy = ctk.CTkProgressBar(
-            tarjeta,
-            width=100,
-            height=10,
-            corner_radius=14,
-            progress_color=color_fpy,
-            fg_color="#454B70"
-        )
-
-        barra_fpy.grid(
-            row=3,
-            column=0,
-            padx=20,
-            pady=2,
-            sticky="ew"
-        )
-
-        barra_fpy.set(fpy / 100)
-
-        lbl_titulo_top = ctk.CTkLabel(
-            tarjeta,
-            text="TOP DEFECTOS",
-            font=("Arial", 12, "bold"),
-            text_color="#79C2FF"
-        )
-
-        lbl_titulo_top.grid(
-            row=4,
-            column=0,
-            padx=12,
-            pady=2
-        )
-
-        texto_top = self.formatear_top_3_defectos(
-            top_3_defectos
-        )
-
-        lbl_top = ctk.CTkLabel(
-            tarjeta,
-            text=texto_top,
-            font=("Arial", 14, "bold"),
-            text_color="#DDE2FF",
-            justify="left",
-            anchor="w",
-            wraplength=245
-        )
-
-        lbl_top.grid(
-            row=5,
-            column=0,
-            padx=15,
-            pady=2,
-            sticky="ew"
-        )
-
     def formatear_top_3_defectos(self, top_3_defectos):
         """
         Forma el texto de los tres defectos principales.
@@ -1587,18 +1463,32 @@ class RegistroDefectosSMT:
         return "\n".join(lineas)
 
     def mostrar_sin_modelos(self, mensaje):
-        """Muestra un mensaje cuando no hay modelos con registros para la fecha seleccionada."""
-        etiqueta = ctk.CTkLabel(
-            self.frame_fpy_modelos,
-            text=mensaje,
-            font=("Arial", 16),
-            text_color="#8F96B8"
-        )
+        """
+        Muestra un mensaje cuando no existen modelos
+        para la fecha seleccionada.
+        """
 
-        etiqueta.pack(
-            expand=True,
-            padx=20,
-            pady=5
+        for datos_tarjeta in self.tarjetas_modelos.values():
+            datos_tarjeta["frame"].grid_remove()
+
+        if self.lbl_sin_modelos is None:
+            self.lbl_sin_modelos = ctk.CTkLabel(
+                self.frame_fpy_modelos,
+                text=mensaje,
+                font=("Arial", 16),
+                text_color="#8F96B8"
+            )
+        else:
+            self.lbl_sin_modelos.configure(
+                text=mensaje
+            )
+
+        self.lbl_sin_modelos.grid(
+            row=0,
+            column=0,
+            padx=30,
+            pady=50,
+            sticky="nsew"
         )
 
     def formatear_top_3(self, top_3):
@@ -1625,15 +1515,6 @@ class RegistroDefectosSMT:
         Genera el Pareto global de defectos correspondiente
         a la fecha seleccionada.
         """
-
-        # Limpiar gráfica anterior
-        if self.canvas_pareto is not None:
-            self.canvas_pareto.get_tk_widget().destroy()
-            self.canvas_pareto = None
-
-        if self.fig_pareto is not None:
-            plt.close(self.fig_pareto)
-            self.fig_pareto = None
 
         if not os.path.exists(self.archivo_log):
             self.mostrar_mensaje_pareto(
@@ -1785,16 +1666,21 @@ class RegistroDefectosSMT:
         acumulado
     ):
         """
-        Dibuja las barras de defectos y la línea acumulada.
+        Actualiza el Pareto sin destruir el canvas.
         """
 
-        self.fig_pareto, self.ax_pareto = plt.subplots(
-            figsize=(12, 4.5),
-            dpi=100
-        )
+        if self.fig_pareto is None or self.canvas_pareto is None:
+            return
+
+        # Limpiar solamente el contenido de la figura
+        self.fig_pareto.clear()
+
+        self.ax_pareto = self.fig_pareto.add_subplot(111)
+        self.ax_pareto_porcentaje = self.ax_pareto.twinx()
 
         self.fig_pareto.patch.set_facecolor("#252842")
         self.ax_pareto.set_facecolor("#252842")
+        self.ax_pareto_porcentaje.set_facecolor("none")
 
         posiciones = list(range(len(nombres)))
 
@@ -1841,14 +1727,11 @@ class RegistroDefectosSMT:
             alpha=0.20
         )
 
-        # Quitar bordes superiores y derechos
         self.ax_pareto.spines["top"].set_visible(False)
         self.ax_pareto.spines["right"].set_visible(False)
-
         self.ax_pareto.spines["bottom"].set_color("#454B70")
         self.ax_pareto.spines["left"].set_color("#454B70")
 
-        # Mostrar cantidad encima de cada barra
         for barra, cantidad in zip(barras, cantidades):
             self.ax_pareto.text(
                 barra.get_x() + barra.get_width() / 2,
@@ -1861,10 +1744,8 @@ class RegistroDefectosSMT:
                 fontweight="bold"
             )
 
-        # Eje secundario para porcentaje acumulado
-        ax_porcentaje = self.ax_pareto.twinx()
-
-        ax_porcentaje.plot(
+        # Línea acumulada
+        self.ax_pareto_porcentaje.plot(
             posiciones,
             acumulado,
             color="#FFD166",
@@ -1873,29 +1754,28 @@ class RegistroDefectosSMT:
             markersize=5
         )
 
-        ax_porcentaje.set_ylim(0, 110)
+        self.ax_pareto_porcentaje.set_ylim(0, 110)
 
-        ax_porcentaje.set_ylabel(
+        self.ax_pareto_porcentaje.set_ylabel(
             "Porcentaje acumulado",
             color="#FFD166",
             fontsize=11
         )
 
-        ax_porcentaje.tick_params(
+        self.ax_pareto_porcentaje.tick_params(
             axis="y",
             colors="#FFD166"
         )
 
-        ax_porcentaje.yaxis.set_major_formatter(
+        self.ax_pareto_porcentaje.yaxis.set_major_formatter(
             PercentFormatter()
         )
 
-        ax_porcentaje.spines["top"].set_visible(False)
-        ax_porcentaje.spines["left"].set_visible(False)
-        ax_porcentaje.spines["right"].set_color("#454B70")
+        self.ax_pareto_porcentaje.spines["top"].set_visible(False)
+        self.ax_pareto_porcentaje.spines["left"].set_visible(False)
+        self.ax_pareto_porcentaje.spines["right"].set_color("#454B70")
 
-        # Línea de referencia del 80 %
-        ax_porcentaje.axhline(
+        self.ax_pareto_porcentaje.axhline(
             y=80,
             color="#FF6B6B",
             linestyle="--",
@@ -1903,7 +1783,7 @@ class RegistroDefectosSMT:
             alpha=0.85
         )
 
-        ax_porcentaje.text(
+        self.ax_pareto_porcentaje.text(
             len(nombres) - 1,
             82,
             "80 %",
@@ -1915,43 +1795,42 @@ class RegistroDefectosSMT:
 
         self.fig_pareto.tight_layout()
 
-        self.canvas_pareto = FigureCanvasTkAgg(
-            self.fig_pareto,
-            master=self.frame_pareto_global
-        )
-
-        self.canvas_pareto.draw()
-
-        self.canvas_pareto.get_tk_widget().grid(
-            row=0,
-            column=0,
-            padx=10,
-            pady=5,
-            sticky="nsew"
-        )
+        # Actualización suave
+        self.canvas_pareto.draw_idle()
 
     def mostrar_mensaje_pareto(self, mensaje):
         """
-        Muestra un mensaje dentro del espacio del Pareto.
+        Muestra un mensaje dentro del canvas sin destruirlo.
         """
 
-        for widget in self.frame_pareto_global.winfo_children():
-            widget.destroy()
+        if self.fig_pareto is None or self.canvas_pareto is None:
+            return
 
-        etiqueta = ctk.CTkLabel(
-            self.frame_pareto_global,
-            text=mensaje,
-            font=("Arial", 16),
-            text_color="#8F96B8"
+        self.fig_pareto.clear()
+
+        self.ax_pareto = self.fig_pareto.add_subplot(111)
+
+        self.fig_pareto.patch.set_facecolor("#252842")
+        self.ax_pareto.set_facecolor("#252842")
+
+        self.ax_pareto.text(
+            0.5,
+            0.5,
+            mensaje,
+            transform=self.ax_pareto.transAxes,
+            ha="center",
+            va="center",
+            fontsize=15,
+            color="#8F96B8"
         )
 
-        etiqueta.grid(
-            row=0,
-            column=0,
-            padx=20,
-            pady=5,
-            sticky="nsew"
-        )
+        self.ax_pareto.set_xticks([])
+        self.ax_pareto.set_yticks([])
+
+        for borde in self.ax_pareto.spines.values():
+            borde.set_visible(False)
+
+        self.canvas_pareto.draw_idle()
 
     def actualizar_fecha_hora(self):
         """Actualiza la etiqueta de fecha y hora cada segundo."""
@@ -2394,6 +2273,258 @@ class RegistroDefectosSMT:
             self.root.destroy()
         except tk.TclError:
             pass
+
+    def inicializar_pareto(self):
+        """
+        Crea la figura y el canvas del Pareto una sola vez.
+        """
+
+        self.fig_pareto = plt.Figure(
+            figsize=(12, 4.5),
+            dpi=100,
+            facecolor="#252842"
+        )
+
+        self.ax_pareto = self.fig_pareto.add_subplot(111)
+
+        self.canvas_pareto = FigureCanvasTkAgg(
+            self.fig_pareto,
+            master=self.frame_pareto_global
+        )
+
+        self.canvas_pareto.get_tk_widget().grid(
+            row=0,
+            column=0,
+            padx=10,
+            pady=10,
+            sticky="nsew"
+        )
+
+        self.mostrar_mensaje_pareto(
+            "Sin información para mostrar"
+        )
+
+    def actualizar_tarjeta_fpy_modelo(
+        self,
+        modelo,
+        fpy,
+        estandar,
+        defectos,
+        top_3_defectos,
+        columna
+    ):
+        """
+        Actualiza una tarjeta existente.
+        Si todavía no existe, la crea una sola vez.
+        """
+
+        if fpy >= 98:
+            color_fpy = "#6FE3A1"
+
+        elif fpy >= 95:
+            color_fpy = "#FFD166"
+
+        else:
+            color_fpy = "#FF6B6B"
+
+        texto_top = self.formatear_top_3_defectos(
+            top_3_defectos
+        )
+
+        # =====================================================
+        # SI YA EXISTE, SOLO ACTUALIZAR
+        # =====================================================
+        if modelo in self.tarjetas_modelos:
+
+            datos_tarjeta = self.tarjetas_modelos[modelo]
+
+            datos_tarjeta["lbl_fpy"].configure(
+                text=f"{fpy:.2f} %",
+                text_color=color_fpy
+            )
+
+            datos_tarjeta["lbl_totales"].configure(
+                text=(
+                    f"Producción: {estandar}\n"
+                    f"Defectos: {defectos}"
+                )
+            )
+
+            datos_tarjeta["lbl_top"].configure(
+                text=texto_top
+            )
+
+            datos_tarjeta["barra_fpy"].configure(
+                progress_color=color_fpy
+            )
+
+            datos_tarjeta["barra_fpy"].set(
+                max(0.0, min(fpy / 100, 1.0))
+            )
+
+            datos_tarjeta["frame"].grid(
+                row=0,
+                column=columna,
+                padx=8,
+                pady=8,
+                sticky="nsew"
+            )
+
+            return
+
+        # =====================================================
+        # SI NO EXISTE, CREARLA
+        # =====================================================
+        tarjeta = ctk.CTkFrame(
+            self.frame_fpy_modelos,
+            width=250,
+            height=230,
+            corner_radius=12,
+            fg_color="#292C47",
+            border_width=1,
+            border_color="#454B70"
+        )
+
+        tarjeta.grid(
+            row=0,
+            column=columna,
+            padx=8,
+            pady=8,
+            sticky="nsew"
+        )
+
+        tarjeta.grid_propagate(False)
+        tarjeta.grid_columnconfigure(0, weight=1)
+
+        lbl_modelo = ctk.CTkLabel(
+            tarjeta,
+            text=modelo,
+            font=("Arial", 16, "bold"),
+            text_color="#DDE2FF"
+        )
+
+        lbl_modelo.grid(
+            row=0,
+            column=0,
+            padx=12,
+            pady=(10, 2)
+        )
+
+        lbl_fpy = ctk.CTkLabel(
+            tarjeta,
+            text=f"{fpy:.2f} %",
+            font=("Arial", 30, "bold"),
+            text_color=color_fpy
+        )
+
+        lbl_fpy.grid(
+            row=1,
+            column=0,
+            padx=12,
+            pady=(2, 2)
+        )
+
+        lbl_totales = ctk.CTkLabel(
+            tarjeta,
+            text=(
+                f"Producción: {estandar}\n"
+                f"Defectos: {defectos}"
+            ),
+            font=("Arial", 12),
+            text_color="#AEB4D0",
+            justify="center"
+        )
+
+        lbl_totales.grid(
+            row=2,
+            column=0,
+            padx=12,
+            pady=(0, 5)
+        )
+
+        barra_fpy = ctk.CTkProgressBar(
+            tarjeta,
+            width=210,
+            height=10,
+            corner_radius=5,
+            progress_color=color_fpy,
+            fg_color="#454B70"
+        )
+
+        barra_fpy.grid(
+            row=3,
+            column=0,
+            padx=20,
+            pady=(3, 8),
+            sticky="ew"
+        )
+
+        barra_fpy.set(
+            max(0.0, min(fpy / 100, 1.0))
+        )
+
+        lbl_titulo_top = ctk.CTkLabel(
+            tarjeta,
+            text="TOP DEFECTOS",
+            font=("Arial", 12, "bold"),
+            text_color="#79C2FF"
+        )
+
+        lbl_titulo_top.grid(
+            row=4,
+            column=0,
+            padx=12,
+            pady=(2, 3)
+        )
+
+        lbl_top = ctk.CTkLabel(
+            tarjeta,
+            text=texto_top,
+            font=("Arial", 11, "bold"),
+            text_color="#DDE2FF",
+            justify="left",
+            anchor="w",
+            wraplength=215
+        )
+
+        lbl_top.grid(
+            row=5,
+            column=0,
+            padx=15,
+            pady=(0, 10),
+            sticky="ew"
+        )
+
+        # Guardar referencias para próximas actualizaciones
+        self.tarjetas_modelos[modelo] = {
+            "frame": tarjeta,
+            "lbl_modelo": lbl_modelo,
+            "lbl_fpy": lbl_fpy,
+            "lbl_totales": lbl_totales,
+            "barra_fpy": barra_fpy,
+            "lbl_titulo_top": lbl_titulo_top,
+            "lbl_top": lbl_top
+        }
+
+    def solicitar_actualizacion_dashboard(self):
+        """
+        Agrupa varias solicitudes de actualización en una sola.
+        """
+        if self.cerrando_aplicacion:
+            return
+
+        if self.after_dashboard is not None:
+            try:
+                self.root.after_cancel(
+                    self.after_dashboard
+                )
+            except tk.TclError:
+                pass
+
+        self.after_dashboard = self.root.after(
+            80,
+            self.actualizar_dashboard_fecha
+        )
 
 
 if __name__ == "__main__":

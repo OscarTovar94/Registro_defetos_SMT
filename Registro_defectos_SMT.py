@@ -2,13 +2,15 @@
 ------------------------------------------------------------
 Proyecto : Registro de defectos SMT
 Autor    : Oscar Tovar
-Versión  : 1.0
+Versión  : 2.0
 ------------------------------------------------------------
 
 Historial de Revisiones
 
 Rev 1.0 - 21/07/2026
 - Creación inicial de la aplicación.
+Rev 2.0 - 28/07/2026
+- Cambio en el registro de defectos.
 ------------------------------------------------------------
 """
 import csv
@@ -601,7 +603,7 @@ class RegistroDefectosSMT:
 
         self.lbl_by = ctk.CTkLabel(
             self.frame_pareto_global,
-            text="Rev: 1.0 (By: Oscar Tovar)",
+            text="Rev: 2.0 (By: Oscar Tovar)",
             font=("Arial", 10),
             text_color="#AEB4D0"
         )
@@ -610,7 +612,7 @@ class RegistroDefectosSMT:
             row=1,
             column=0,
             padx=15,
-            pady=(5, 5),
+            pady=(1, 5),
             sticky="e"
         )
 
