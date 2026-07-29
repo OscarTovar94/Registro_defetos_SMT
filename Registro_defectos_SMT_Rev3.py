@@ -2,7 +2,7 @@
 ------------------------------------------------------------
 Proyecto: Registro de defectos SMT
 Autor: Oscar Tovar
-Versión: 2.0
+Versión: 3.0
 ------------------------------------------------------------
 
 Historial de Revisiones
