@@ -1,8 +1,8 @@
 """
 ------------------------------------------------------------
-Proyecto : Registro de defectos SMT
-Autor    : Oscar Tovar
-Versión  : 2.0
+Proyecto: Registro de defectos SMT
+Autor: Oscar Tovar
+Versión: 2.0
 ------------------------------------------------------------
 
 Historial de Revisiones
@@ -28,6 +28,8 @@ import customtkinter as ctk
 import win32event
 import win32api
 import winerror
+from matplotlib.figure import Figure
+import pandas as pd
 
 # ---- Control de instancia única ----
 MUTEX_NAME = "DefectosSMT_UnicaInstancia"
@@ -47,6 +49,7 @@ class RegistroDefectosSMT:
 
     def __init__(self, master):
         self.root = master
+        self.ventana_analisis_defectos = None
 
         self.root.title("Registro de Defectos SMT")
         # self.root.state("zoomed")
@@ -98,11 +101,16 @@ class RegistroDefectosSMT:
         self.ventana_registro_defectos = None
         self.posiciones_pendientes_defectos = []
         self.indice_pcb_defecto_actual = 0
+        self.ventana_analisis_defectos = None
+        self.canvas_analisis_defectos = None
+        self.frame_dashboard_analisis = None
 
         self.defectos_pcb_actual = {}
         self.filas_defectos_pcb = {}
         self.guardando_panel = False
         self.opcion_seleccionar_panel = "Seleccionar modelo"
+        self.opcion_otro = "Otro"
+        self.descripcion_otro_pcb = ctk.StringVar(value="")
 
         self.root.protocol(
             "WM_DELETE_WINDOW",
@@ -377,6 +385,24 @@ class RegistroDefectosSMT:
             command=self.solicitar_actualizacion_dashboard
         )
         self.btn_actualizar_fpy.grid(row=0, column=3, padx=15, pady=5)
+
+        self.btn_otros_defectos = ctk.CTkButton(
+            self.frame_filtro_graficas,
+            text="Análisis de defectos",
+            width=150,
+            height=32,
+            font=("Arial", 13, "bold"),
+            fg_color="#2E8B57",
+            hover_color="#246B45",
+            command=self.abrir_ventana_analisis_defectos
+        )
+
+        self.btn_otros_defectos.grid(
+            row=0,
+            column=4,
+            padx=(5, 5),
+            pady=8
+        )
 
         # FPY total
         self.frame_fpy_total = ctk.CTkFrame(
@@ -781,7 +807,7 @@ class RegistroDefectosSMT:
 
         columnas_fijas = {
             "Sesion", "Modelo", "NumeroParte", "Posicion", "Renglon",
-            "Columna", "ID_PCB", "Resultado", "Defectos", "Fecha/Hora"
+            "Columna", "ID_PCB", "Resultado", "Defectos", "DescripcionOtro", "Fecha/Hora"
         }
 
         try:
@@ -993,11 +1019,7 @@ class RegistroDefectosSMT:
         finally:
             self.dashboard_actualizando = False
 
-    def calcular_fpy_por_modelo(
-        self,
-        registros=None,
-        columnas_defectos=None
-    ):
+    def calcular_fpy_por_modelo(self,registros=None,columnas_defectos=None):
         """Calcula y muestra las métricas de cada modelo por PCB."""
         for datos_tarjeta in self.tarjetas_modelos.values():
             datos_tarjeta["frame"].grid_remove()
@@ -1148,11 +1170,7 @@ class RegistroDefectosSMT:
             sticky="nsew"
         )
 
-    def actualizar_pareto_global(
-        self,
-        registros=None,
-        columnas_defectos=None
-    ):
+    def actualizar_pareto_global(self,registros=None,columnas_defectos=None):
         """Genera el Pareto global mediante ocurrencias de defectos."""
         if registros is None or columnas_defectos is None:
             registros, columnas_defectos, error = (
@@ -1210,12 +1228,7 @@ class RegistroDefectosSMT:
             acumulado=acumulado
         )
 
-    def crear_grafica_pareto(
-        self,
-        nombres,
-        cantidades,
-        acumulado
-    ):
+    def crear_grafica_pareto(self,nombres,cantidades,acumulado):
         """
         Actualiza el Pareto sin destruir el canvas.
         """
@@ -1490,18 +1503,7 @@ class RegistroDefectosSMT:
             "Sin información para mostrar"
         )
 
-    def actualizar_tarjeta_fpy_modelo(
-        self,
-        modelo,
-        numero_parte,
-        fpy,
-        inspeccionadas,
-        buenas,
-        defectuosas,
-        defectos_encontrados,
-        top_3_defectos,
-        columna
-    ):
+    def actualizar_tarjeta_fpy_modelo(self,modelo,numero_parte,fpy,inspeccionadas,buenas,defectuosas,defectos_encontrados,top_3_defectos,columna):
         """Crea o actualiza una tarjeta de resultados por modelo."""
         color_fpy = self.obtener_color_fpy(fpy)
         texto_top = self.formatear_top_3_defectos(
@@ -2861,11 +2863,12 @@ class RegistroDefectosSMT:
         self.combo_defectos_pcb = ctk.CTkComboBox(
             frame_captura,
             variable=self.defecto_pcb_seleccionado,
-            values=self.lista_defectos,
+            values=self.obtener_lista_defectos_captura(),
             state="readonly",
             height=38,
             font=("Arial", 15),
-            dropdown_font=("Arial", 14)
+            dropdown_font=("Arial", 14),
+            command=self.cambiar_defecto_pcb
         )
 
         self.combo_defectos_pcb.grid(
@@ -2905,6 +2908,56 @@ class RegistroDefectosSMT:
             column=2,
             padx=(8, 0)
         )
+
+        self.frame_descripcion_otro = ctk.CTkFrame(
+            frame_captura,
+            fg_color="transparent"
+        )
+
+        self.frame_descripcion_otro.grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            padx=0,
+            pady=(10, 0),
+            sticky="ew"
+        )
+
+        self.frame_descripcion_otro.grid_columnconfigure(
+            1,
+            weight=1
+        )
+
+        self.lbl_descripcion_otro = ctk.CTkLabel(
+            self.frame_descripcion_otro,
+            text="Descripción de otro defecto:",
+            font=("Arial", 14, "bold"),
+            text_color="#DDE2FF"
+        )
+
+        self.lbl_descripcion_otro.grid(
+            row=0,
+            column=0,
+            padx=(0, 10),
+            sticky="w"
+        )
+
+        self.entry_descripcion_otro = ctk.CTkEntry(
+            self.frame_descripcion_otro,
+            textvariable=self.descripcion_otro_pcb,
+            height=38,
+            font=("Arial", 15),
+            placeholder_text="Escriba una descripción clara del defecto"
+        )
+
+        self.entry_descripcion_otro.grid(
+            row=0,
+            column=1,
+            sticky="ew"
+        )
+
+        # Oculto hasta seleccionar Otro
+        self.frame_descripcion_otro.grid_remove()
 
         self.frame_lista_defectos_pcb = ctk.CTkScrollableFrame(
             frame_contenido,
@@ -3021,6 +3074,8 @@ class RegistroDefectosSMT:
         )
 
         self.cantidad_defecto_pcb.set("1")
+        self.descripcion_otro_pcb.set("")
+        self.frame_descripcion_otro.grid_remove()
 
         self.actualizar_lista_defectos_pcb()
 
@@ -3036,6 +3091,9 @@ class RegistroDefectosSMT:
     def agregar_defecto_pcb_actual(self):
         """
         Agrega o acumula un defecto en la PCB actual.
+
+        Cuando se selecciona Otro, la descripción forma parte de la
+        identificación interna del defecto.
         """
 
         defecto = self.defecto_pcb_seleccionado.get().strip()
@@ -3070,19 +3128,72 @@ class RegistroDefectosSMT:
             )
             return
 
+        # -----------------------------------------------------
+        # DEFECTO PERSONALIZADO
+        # -----------------------------------------------------
+        if defecto == self.opcion_otro:
+            descripcion = (
+                self.descripcion_otro_pcb.get()
+                .strip()
+            )
+
+            if not descripcion:
+                messagebox.showwarning(
+                    "Descripción requerida",
+                    (
+                        "Escriba una descripción para el defecto "
+                        'seleccionado como "Otro".'
+                    ),
+                    parent=self.ventana_registro_defectos
+                )
+
+                self.entry_descripcion_otro.focus_set()
+                return
+
+            if len(descripcion) < 3:
+                messagebox.showwarning(
+                    "Descripción incorrecta",
+                    (
+                        "La descripción debe contener al menos "
+                        "3 caracteres."
+                    ),
+                    parent=self.ventana_registro_defectos
+                )
+                return
+
+            if len(descripcion) > 100:
+                messagebox.showwarning(
+                    "Descripción demasiado larga",
+                    (
+                        "La descripción no debe superar "
+                        "los 100 caracteres."
+                    ),
+                    parent=self.ventana_registro_defectos
+                )
+                return
+
+            # La descripción queda diferenciada en memoria
+            clave_defecto = f"Otro: {descripcion}"
+
+        else:
+            clave_defecto = defecto
+
         cantidad_actual = self.defectos_pcb_actual.get(
-            defecto,
+            clave_defecto,
             0
         )
 
-        self.defectos_pcb_actual[defecto] = (
+        self.defectos_pcb_actual[clave_defecto] = (
             cantidad_actual + cantidad
         )
 
         self.defecto_pcb_seleccionado.set(
             "Seleccione un defecto"
         )
+
         self.cantidad_defecto_pcb.set("1")
+        self.descripcion_otro_pcb.set("")
+        self.frame_descripcion_otro.grid_remove()
 
         self.actualizar_lista_defectos_pcb()
 
@@ -3438,7 +3549,7 @@ class RegistroDefectosSMT:
 
     def obtener_encabezados_log_pcb(self):
         """
-        Retorna los encabezados del nuevo archivo por PCB.
+        Retorna los encabezados del archivo LogFilePCB.csv.
         """
 
         columnas_fijas = [
@@ -3451,12 +3562,16 @@ class RegistroDefectosSMT:
             "ID_PCB",
             "Resultado",
             "Defectos",
+            "DescripcionOtro",
             "Fecha/Hora"
         ]
 
-        return columnas_fijas + list(
-            self.lista_defectos
-        )
+        columnas_defectos = list(self.lista_defectos)
+
+        if self.opcion_otro not in columnas_defectos:
+            columnas_defectos.append(self.opcion_otro)
+
+        return columnas_fijas + columnas_defectos
 
     def obtener_coordenadas_posicion(self, posicion):
         """
@@ -3517,6 +3632,7 @@ class RegistroDefectosSMT:
             "ID_PCB",
             "Resultado",
             "Defectos",
+            "DescripcionOtro",
             "Fecha/Hora"
         ]
 
@@ -3613,10 +3729,21 @@ class RegistroDefectosSMT:
                 )
             )
 
+            columnas_defectos = list(
+                self.lista_defectos
+            )
+
+            if self.opcion_otro not in columnas_defectos:
+                columnas_defectos.append(
+                    self.opcion_otro
+                )
+
             cantidades_defectos = {
                 defecto: 0
-                for defecto in self.lista_defectos
+                for defecto in columnas_defectos
             }
+
+            descripciones_otro = []
 
             if posicion in pcb_defectuosas:
                 datos_pcb = pcb_defectuosas[
@@ -3631,12 +3758,25 @@ class RegistroDefectosSMT:
                     {}
                 )
 
-                for defecto, cantidad in (
-                    defectos_pcb.items()
-                ):
-                    cantidades_defectos[
-                        defecto
-                    ] = cantidad
+                for defecto, cantidad in defectos_pcb.items():
+
+                    if defecto.startswith("Otro: "):
+                        descripcion = defecto[
+                            len("Otro: "):
+                        ].strip()
+
+                        cantidades_defectos[
+                            self.opcion_otro
+                        ] += cantidad
+
+                        descripciones_otro.append(
+                            f"{descripcion} ({cantidad})"
+                        )
+
+                    else:
+                        cantidades_defectos[
+                            defecto
+                        ] = cantidad
 
                 total_defectos = sum(
                     defectos_pcb.values()
@@ -3646,6 +3786,7 @@ class RegistroDefectosSMT:
                 resultado = "PASS"
                 id_pcb = ""
                 total_defectos = 0
+                descripciones_otro = []
 
             fila = {
                 "Sesion": self.panel_actual[
@@ -3663,6 +3804,9 @@ class RegistroDefectosSMT:
                 "ID_PCB": id_pcb,
                 "Resultado": resultado,
                 "Defectos": total_defectos,
+                "DescripcionOtro": " | ".join(
+                    descripciones_otro
+                ),
                 "Fecha/Hora": fecha_hora
             }
 
@@ -3702,6 +3846,8 @@ class RegistroDefectosSMT:
             encabezados = (
                 self.asegurar_encabezados_log_pcb()
             )
+            print("Encabezados para guardar:")
+            print(encabezados)
 
             filas = (
                 self.construir_filas_panel_actual()
@@ -3883,6 +4029,986 @@ class RegistroDefectosSMT:
             self.btn_confirmar_panel.configure(
                 state="disabled"
             )
+
+    def obtener_lista_defectos_captura(self):
+        """
+        Retorna los defectos configurados y agrega la opción especial Otro.
+        """
+
+        defectos = list(self.lista_defectos)
+
+        if self.opcion_otro not in defectos:
+            defectos.append(self.opcion_otro)
+
+        return defectos
+
+    def cambiar_defecto_pcb(self, defecto):
+        """
+        Muestra el campo de descripción cuando se selecciona Otro.
+        """
+
+        defecto = defecto.strip()
+
+        if defecto == self.opcion_otro:
+            self.frame_descripcion_otro.grid()
+
+            self.ventana_registro_defectos.after(
+                80,
+                self.entry_descripcion_otro.focus_set
+            )
+        else:
+            self.frame_descripcion_otro.grid_remove()
+            self.descripcion_otro_pcb.set("")
+
+    def abrir_ventana_analisis_defectos(self):
+        """
+        Abre el dashboard independiente para analizar todos los defectos.
+        """
+
+        if (
+            self.ventana_analisis_defectos is not None
+            and self.ventana_analisis_defectos.winfo_exists()
+        ):
+            self.ventana_analisis_defectos.lift()
+            self.ventana_analisis_defectos.focus_force()
+            return
+
+        self.ventana_analisis_defectos = ctk.CTkToplevel(
+            self.root
+        )
+        self.ventana_analisis_defectos.protocol(
+            "WM_DELETE_WINDOW",
+            self.cerrar_ventana_analisis_defectos
+        )
+
+        self.ventana_analisis_defectos.title(
+            "Análisis de defectos SMT"
+        )
+
+        self.ventana_analisis_defectos.minsize(
+            1000,
+            650
+        )
+        self.ventana_analisis_defectos.after(
+            100,
+            lambda: self.ventana_analisis_defectos.state("zoomed")
+        )
+
+        self.ventana_analisis_defectos.transient(
+            self.root
+        )
+
+        self.ventana_analisis_defectos.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        self.ventana_analisis_defectos.grid_rowconfigure(
+            1,
+            weight=1
+        )
+
+        # =====================================================
+        # FILTROS
+        # =====================================================
+
+        self.frame_filtros_analisis = ctk.CTkFrame(
+            self.ventana_analisis_defectos,
+            corner_radius=10
+        )
+
+        self.frame_filtros_analisis.grid(
+            row=0,
+            column=0,
+            padx=15,
+            pady=(15, 8),
+            sticky="ew"
+        )
+
+        self.frame_filtros_analisis.grid_columnconfigure(
+            8,
+            weight=1
+        )
+
+        titulo = ctk.CTkLabel(
+            self.frame_filtros_analisis,
+            text="ANÁLISIS DE DEFECTOS",
+            font=("Arial", 21, "bold")
+        )
+
+        titulo.grid(
+            row=0,
+            column=0,
+            padx=(15, 25),
+            pady=15
+        )
+
+        # -----------------------------------------------------
+        # FECHA INDEPENDIENTE
+        # -----------------------------------------------------
+
+        ctk.CTkLabel(
+            self.frame_filtros_analisis,
+            text="Fecha:",
+            font=("Arial", 13, "bold")
+        ).grid(
+            row=0,
+            column=1,
+            padx=(5, 5)
+        )
+
+        self.selector_fecha_analisis = DateEntry(
+            self.frame_filtros_analisis,
+            width=12,
+            date_pattern="dd/mm/yyyy",
+            font=("Arial", 12),
+            background="#2878D0",
+            foreground="white",
+            borderwidth=0
+        )
+
+        # Inicia con la misma fecha del dashboard principal,
+        # pero después funciona de manera independiente.
+        try:
+            self.selector_fecha_analisis.set_date(
+                self.selector_fecha.get_date()
+            )
+        except Exception:
+            self.selector_fecha_analisis.set_date(
+                date.today()
+            )
+
+        self.selector_fecha_analisis.grid(
+            row=0,
+            column=2,
+            padx=(0, 15),
+            pady=12
+        )
+
+        # -----------------------------------------------------
+        # HORA DE INICIO
+        # -----------------------------------------------------
+
+        ctk.CTkLabel(
+            self.frame_filtros_analisis,
+            text="Hora inicial:",
+            font=("Arial", 13, "bold")
+        ).grid(
+            row=0,
+            column=3,
+            padx=(5, 5)
+        )
+
+        horarios = self.generar_opciones_hora(
+            intervalo_minutos=30
+        )
+
+        self.hora_inicio_analisis = ctk.StringVar(
+            value="00:00"
+        )
+
+        self.combo_hora_inicio_analisis = ctk.CTkComboBox(
+            self.frame_filtros_analisis,
+            variable=self.hora_inicio_analisis,
+            values=horarios,
+            width=95,
+            height=32,
+            state="readonly",
+            font=("Arial", 13),
+            dropdown_font=("Arial", 12)
+        )
+
+        self.combo_hora_inicio_analisis.grid(
+            row=0,
+            column=4,
+            padx=(0, 15)
+        )
+
+        # -----------------------------------------------------
+        # HORA FINAL
+        # -----------------------------------------------------
+
+        ctk.CTkLabel(
+            self.frame_filtros_analisis,
+            text="Hora final:",
+            font=("Arial", 13, "bold")
+        ).grid(
+            row=0,
+            column=5,
+            padx=(5, 5)
+        )
+
+        horarios_finales = list(horarios)
+
+        if "23:59" not in horarios_finales:
+            horarios_finales.append("23:59")
+
+        self.hora_final_analisis = ctk.StringVar(
+            value="23:59"
+        )
+
+        self.combo_hora_final_analisis = ctk.CTkComboBox(
+            self.frame_filtros_analisis,
+            variable=self.hora_final_analisis,
+            values=horarios_finales,
+            width=95,
+            height=32,
+            state="readonly",
+            font=("Arial", 13),
+            dropdown_font=("Arial", 12)
+        )
+
+        self.combo_hora_final_analisis.grid(
+            row=0,
+            column=6,
+            padx=(0, 15)
+        )
+
+        # -----------------------------------------------------
+        # MODELO
+        # -----------------------------------------------------
+
+        ctk.CTkLabel(
+            self.frame_filtros_analisis,
+            text="Modelo:",
+            font=("Arial", 13, "bold")
+        ).grid(
+            row=0,
+            column=7,
+            padx=(5, 5)
+        )
+
+        modelos = ["Todos los modelos"]
+
+        modelos.extend(
+            sorted(
+                self.configuracion_modelos.keys()
+            )
+        )
+
+        self.modelo_analisis_defectos = ctk.StringVar(
+            value="Todos los modelos"
+        )
+
+        self.combo_modelo_analisis = ctk.CTkComboBox(
+            self.frame_filtros_analisis,
+            variable=self.modelo_analisis_defectos,
+            values=modelos,
+            width=190,
+            height=32,
+            state="readonly",
+            font=("Arial", 13),
+            dropdown_font=("Arial", 12)
+        )
+
+        self.combo_modelo_analisis.grid(
+            row=0,
+            column=8,
+            padx=(0, 15)
+        )
+
+        # -----------------------------------------------------
+        # ACTUALIZAR
+        # -----------------------------------------------------
+
+        self.btn_actualizar_analisis = ctk.CTkButton(
+            self.frame_filtros_analisis,
+            text="Actualizar",
+            width=110,
+            height=32,
+            font=("Arial", 13, "bold"),
+            command=self.actualizar_dashboard_analisis_defectos
+        )
+
+        self.btn_actualizar_analisis.grid(
+            row=0,
+            column=9,
+            padx=(5, 15),
+            pady=12
+        )
+
+        # Actualizar automáticamente al seleccionar fecha
+        self.selector_fecha_analisis.bind(
+            "<<DateEntrySelected>>",
+            lambda evento: (
+                self.actualizar_dashboard_analisis_defectos()
+            )
+        )
+
+        # =====================================================
+        # CONTENEDOR DEL DASHBOARD
+        # =====================================================
+
+        self.frame_dashboard_analisis = ctk.CTkFrame(
+            self.ventana_analisis_defectos,
+            corner_radius=10
+        )
+
+        self.frame_dashboard_analisis.grid(
+            row=1,
+            column=0,
+            padx=15,
+            pady=(8, 15),
+            sticky="nsew"
+        )
+
+        self.frame_dashboard_analisis.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        self.frame_dashboard_analisis.grid_rowconfigure(
+            1,
+            weight=1
+        )
+
+        self.actualizar_dashboard_analisis_defectos()
+
+    def separar_descripciones_otro(self, texto):
+        """
+        Convierte el contenido de DescripcionOtro en una lista
+        de tuplas: [(descripcion, cantidad), ...].
+        """
+
+        import re
+
+        resultados = []
+
+        if texto is None:
+            return resultados
+
+        texto = str(texto).strip()
+
+        if not texto or texto.lower() == "nan":
+            return resultados
+
+        partes = texto.split(" | ")
+
+        for parte in partes:
+            parte = parte.strip()
+
+            if not parte:
+                continue
+
+            coincidencia = re.match(
+                r"^(.*?)\s*\((\d+)\)\s*$",
+                parte
+            )
+
+            if coincidencia:
+                descripcion = (
+                    coincidencia.group(1).strip()
+                )
+
+                cantidad = int(
+                    coincidencia.group(2)
+                )
+            else:
+                # Compatibilidad con registros anteriores
+                descripcion = parte
+                cantidad = 1
+
+            if descripcion:
+                resultados.append(
+                    (descripcion, cantidad)
+                )
+
+        return resultados
+
+    def obtener_fecha_dashboard_seleccionada(self):
+        """
+        Obtiene la fecha seleccionada en el dashboard.
+        """
+
+        return self.selector_fecha.get().strip()
+
+    def generar_opciones_hora(self, intervalo_minutos=30):
+        """
+        Genera horarios desde 00:00 hasta 23:30.
+
+        Ejemplo con intervalo de 30 minutos:
+        00:00, 00:30, 01:00, 01:30...
+        """
+
+        horarios = []
+
+        for hora in range(24):
+            for minuto in range(0, 60, intervalo_minutos):
+                horarios.append(
+                    f"{hora:02d}:{minuto:02d}"
+                )
+
+        return horarios
+
+    def obtener_datos_analisis_defectos(self,fecha_seleccionada,hora_inicio,hora_final,modelo_seleccionado):
+        """
+        Lee LogFilePCB.csv y filtra los registros por:
+
+        - Fecha
+        - Hora inicial
+        - Hora final
+        - Modelo
+        """
+
+        import os
+        import pandas as pd
+
+        if not os.path.exists(self.archivo_log_pcb):
+            return pd.DataFrame()
+
+        try:
+            df = pd.read_csv(
+                self.archivo_log_pcb,
+                encoding="utf-8-sig"
+            )
+
+        except Exception as error:
+            messagebox.showerror(
+                "Error",
+                (
+                    "No fue posible leer LogFilePCB.csv.\n\n"
+                    f"{error}"
+                ),
+                parent=self.ventana_analisis_defectos
+            )
+
+            return pd.DataFrame()
+
+        if "Fecha/Hora" not in df.columns:
+            return pd.DataFrame()
+
+        # Convierte tanto fecha como hora.
+        df["FechaHoraConvertida"] = pd.to_datetime(
+            df["Fecha/Hora"],
+            dayfirst=True,
+            errors="coerce"
+        )
+
+        df = df.dropna(
+            subset=["FechaHoraConvertida"]
+        ).copy()
+
+        try:
+            fecha_inicio = pd.to_datetime(
+                f"{fecha_seleccionada} {hora_inicio}",
+                format="%d/%m/%Y %H:%M"
+            )
+
+            fecha_final = pd.to_datetime(
+                f"{fecha_seleccionada} {hora_final}",
+                format="%d/%m/%Y %H:%M"
+            )
+
+        except ValueError:
+            messagebox.showwarning(
+                "Filtro incorrecto",
+                "La fecha o el horario seleccionado no es válido.",
+                parent=self.ventana_analisis_defectos
+            )
+
+            return pd.DataFrame()
+
+        if fecha_inicio > fecha_final:
+            messagebox.showwarning(
+                "Horario incorrecto",
+                (
+                    "La hora inicial no puede ser mayor "
+                    "que la hora final."
+                ),
+                parent=self.ventana_analisis_defectos
+            )
+
+            return pd.DataFrame()
+
+        df = df[
+            (
+                df["FechaHoraConvertida"]
+                >= fecha_inicio
+            )
+            & (
+                df["FechaHoraConvertida"]
+                <= fecha_final
+            )
+        ].copy()
+
+        if modelo_seleccionado != "Todos los modelos":
+            df = df[
+                df["Modelo"].astype(str).str.strip()
+                == modelo_seleccionado
+            ].copy()
+
+        return df
+
+    def obtener_columnas_defectos_analisis(self, df):
+        """
+        Retorna todos los defectos configurados en defects.ini,
+        más la categoría especial Otro.
+        """
+
+        defectos = list(self.lista_defectos)
+
+        if self.opcion_otro not in defectos:
+            defectos.append(
+                self.opcion_otro
+            )
+
+        # Solo usar columnas que realmente existan en el CSV.
+        return [
+            defecto
+            for defecto in defectos
+            if defecto in df.columns
+        ]
+
+    def calcular_totales_defectos_analisis(self, df):
+        """
+        Calcula la cantidad de cada defecto configurado.
+        Incluye defectos con cero ocurrencias.
+        """
+
+        import pandas as pd
+
+        defectos_configurados = list(
+            self.lista_defectos
+        )
+
+        if self.opcion_otro not in defectos_configurados:
+            defectos_configurados.append(
+                self.opcion_otro
+            )
+
+        resultados = []
+
+        for defecto in defectos_configurados:
+
+            if defecto in df.columns:
+                cantidades = pd.to_numeric(
+                    df[defecto],
+                    errors="coerce"
+                ).fillna(0)
+
+                total = int(cantidades.sum())
+            else:
+                total = 0
+
+            resultados.append(
+                {
+                    "Defecto": defecto,
+                    "Cantidad": total
+                }
+            )
+
+        return pd.DataFrame(resultados)
+
+    def actualizar_dashboard_analisis_defectos(self):
+        """
+        Actualiza el análisis completo de defectos.
+        """
+
+        #import pandas as pd
+        #from matplotlib.figure import Figure
+        #from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg)
+
+        fecha = (
+            self.selector_fecha_analisis
+            .get()
+            .strip()
+        )
+
+        hora_inicio = (
+            self.hora_inicio_analisis
+            .get()
+            .strip()
+        )
+
+        hora_final = (
+            self.hora_final_analisis
+            .get()
+            .strip()
+        )
+
+        modelo = (
+            self.modelo_analisis_defectos
+            .get()
+            .strip()
+        )
+
+        # Limpiar dashboard anterior
+        for widget in (
+            self.frame_dashboard_analisis
+            .winfo_children()
+        ):
+            widget.destroy()
+
+        df = self.obtener_datos_analisis_defectos(
+            fecha,
+            hora_inicio,
+            hora_final,
+            modelo
+        )
+
+        if df.empty:
+            mensaje = ctk.CTkLabel(
+                self.frame_dashboard_analisis,
+                text=(
+                    "No existen registros para los filtros "
+                    "seleccionados."
+                ),
+                font=("Arial", 18, "bold"),
+                text_color="#AEB4D0"
+            )
+
+            mensaje.grid(
+                row=0,
+                column=0,
+                padx=20,
+                pady=40
+            )
+
+            return
+
+        datos_defectos = (
+            self.calcular_totales_defectos_analisis(
+                df
+            )
+        )
+
+        datos_otros = self.calcular_detalle_otros_defectos(
+            df
+        )
+
+        # Eliminar la barra general "Otro".
+        datos_defectos = datos_defectos[
+            datos_defectos["Defecto"].astype(str).str.strip()
+            != self.opcion_otro
+        ].copy()
+
+        # Agregar el detalle de Otros.
+        if not datos_otros.empty:
+            datos_defectos = pd.concat(
+                [
+                    datos_defectos,
+                    datos_otros
+                ],
+                ignore_index=True
+            )
+
+        total_pcb = len(df)
+
+        if "Resultado" in df.columns:
+            total_fail = int(
+                (
+                    df["Resultado"]
+                    .astype(str)
+                    .str.upper()
+                    .str.strip()
+                    == "FAIL"
+                ).sum()
+            )
+        else:
+            total_fail = 0
+
+        total_ocurrencias = int(
+            datos_defectos["Cantidad"].sum()
+        )
+
+        defectos_con_registro = int(
+            (
+                datos_defectos["Cantidad"] > 0
+            ).sum()
+        )
+
+        # =====================================================
+        # TARJETAS DE RESUMEN
+        # =====================================================
+
+        frame_resumen = ctk.CTkFrame(
+            self.frame_dashboard_analisis,
+            fg_color="transparent"
+        )
+
+        frame_resumen.grid(
+            row=0,
+            column=0,
+            padx=12,
+            pady=(12, 5),
+            sticky="ew"
+        )
+
+        for columna in range(4):
+            frame_resumen.grid_columnconfigure(
+                columna,
+                weight=1
+            )
+
+        datos_tarjetas = [
+            (
+                "PCB inspeccionadas",
+                total_pcb
+            ),
+            (
+                "PCB defectuosas",
+                total_fail
+            ),
+            (
+                "Ocurrencias",
+                total_ocurrencias
+            ),
+            (
+                "Tipos encontrados",
+                defectos_con_registro
+            )
+        ]
+
+        for indice, (titulo, valor) in enumerate(
+            datos_tarjetas
+        ):
+            tarjeta = ctk.CTkFrame(
+                frame_resumen,
+                corner_radius=10,
+                border_width=1,
+                border_color="#454B70"
+            )
+
+            tarjeta.grid(
+                row=0,
+                column=indice,
+                padx=6,
+                pady=5,
+                sticky="ew"
+            )
+
+            ctk.CTkLabel(
+                tarjeta,
+                text=titulo,
+                font=("Arial", 13, "bold"),
+                text_color="#AEB4D0"
+            ).pack(
+                pady=(10, 2)
+            )
+
+            ctk.CTkLabel(
+                tarjeta,
+                text=str(valor),
+                font=("Arial", 25, "bold")
+            ).pack(
+                pady=(0, 10)
+            )
+
+        # =====================================================
+        # PREPARAR GRÁFICA
+        # =====================================================
+
+        # Mantiene todos los defectos de defects.ini.
+        grafica = datos_defectos.sort_values(
+            by="Cantidad",
+            ascending=True
+        ).copy()
+
+        figura = Figure(
+            figsize=(11, 6),
+            dpi=100
+        )
+
+        figura.patch.set_facecolor("#252842")
+
+        eje = figura.add_subplot(111)
+        eje.set_facecolor("#252842")
+
+        barras = eje.barh(
+            grafica["Defecto"],
+            grafica["Cantidad"]
+        )
+
+        titulo_modelo = (
+            modelo
+            if modelo != "Todos los modelos"
+            else "Todos los modelos"
+        )
+
+        eje.set_title(
+            (
+                "DEFECTOS REGISTRADOS\n"
+                f"{titulo_modelo} | "
+                f"{fecha} | "
+                f"{hora_inicio} - {hora_final}"
+            ),
+            fontsize=15,
+            fontweight="bold",
+            color="#E6E8FF",
+            pad=15
+        )
+
+        eje.set_xlabel(
+            "Cantidad de ocurrencias",
+            color="#D8DCF5"
+        )
+
+        eje.tick_params(
+            axis="x",
+            colors="#D8DCF5"
+        )
+
+        eje.tick_params(
+            axis="y",
+            colors="#D8DCF5",
+            labelsize=9
+        )
+
+        eje.grid(
+            axis="x",
+            linestyle="--",
+            alpha=0.25
+        )
+
+        cantidad_maxima = max(
+            int(grafica["Cantidad"].max()),
+            1
+        )
+
+        eje.set_xlim(
+            0,
+            cantidad_maxima * 1.15
+        )
+
+        for barra, cantidad in zip(
+            barras,
+            grafica["Cantidad"]
+        ):
+            eje.text(
+                barra.get_width() + (
+                    cantidad_maxima * 0.01
+                ),
+                barra.get_y()
+                + barra.get_height() / 2,
+                str(int(cantidad)),
+                va="center",
+                fontsize=9,
+                fontweight="bold",
+                color="#FFFFFF"
+            )
+
+        eje.spines["top"].set_visible(False)
+        eje.spines["right"].set_visible(False)
+
+        eje.spines["bottom"].set_color(
+            "#6F7390"
+        )
+
+        eje.spines["left"].set_color(
+            "#6F7390"
+        )
+
+        figura.tight_layout()
+
+        canvas = FigureCanvasTkAgg(
+            figura,
+            master=self.frame_dashboard_analisis
+        )
+
+        canvas.draw()
+
+        canvas.get_tk_widget().grid(
+            row=1,
+            column=0,
+            padx=12,
+            pady=(5, 12),
+            sticky="nsew"
+        )
+
+        self.canvas_analisis_defectos = canvas
+
+    def cerrar_ventana_analisis_defectos(self):
+        """Cerrar vetana de anlisis"""
+        if (
+            self.ventana_analisis_defectos is not None
+            and self.ventana_analisis_defectos.winfo_exists()
+        ):
+            self.ventana_analisis_defectos.destroy()
+
+        self.ventana_analisis_defectos = None
+
+    def calcular_detalle_otros_defectos(self, df):
+        """
+        Obtiene las descripciones registradas en la columna
+        DescripcionOtro y suma sus cantidades.
+
+        Ejemplo:
+        Cap roto (2) | PCB rayada (1)
+
+        Resultado:
+        Otro: Cap roto = 2
+        Otro: PCB rayada = 1
+        """
+
+        import re
+        import pandas as pd
+
+        resultados = {}
+
+        if (
+            df.empty
+            or "DescripcionOtro" not in df.columns
+        ):
+            return pd.DataFrame(
+                columns=["Defecto", "Cantidad"]
+            )
+
+        for valor in df["DescripcionOtro"].fillna(""):
+
+            texto = str(valor).strip()
+
+            if not texto or texto.lower() == "nan":
+                continue
+
+            partes = texto.split("|")
+
+            for parte in partes:
+                parte = parte.strip()
+
+                if not parte:
+                    continue
+
+                coincidencia = re.match(
+                    r"^(.*?)\s*\((\d+)\)\s*$",
+                    parte
+                )
+
+                if coincidencia:
+                    descripcion = (
+                        coincidencia.group(1).strip()
+                    )
+
+                    cantidad = int(
+                        coincidencia.group(2)
+                    )
+                else:
+                    descripcion = parte
+                    cantidad = 1
+
+                if not descripcion:
+                    continue
+
+                etiqueta = f"Otro: {descripcion}"
+
+                resultados[etiqueta] = (
+                    resultados.get(etiqueta, 0)
+                    + cantidad
+                )
+
+        if not resultados:
+            return pd.DataFrame(
+                columns=["Defecto", "Cantidad"]
+            )
+
+        return pd.DataFrame(
+            [
+                {
+                    "Defecto": defecto,
+                    "Cantidad": cantidad
+                }
+                for defecto, cantidad in resultados.items()
+            ]
+        )
 
 
 if __name__ == "__main__":
