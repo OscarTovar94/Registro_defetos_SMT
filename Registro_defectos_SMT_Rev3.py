@@ -109,6 +109,8 @@ class RegistroDefectosSMT:
         self.canvas_analisis_defectos = None
         self.figura_analisis_defectos = None
         self.frame_dashboard_analisis = None
+        self.ventana_detalle_pcb_heatmap = None
+        self.datos_heatmap_pcb = {}
 
         # Caché del archivo CSV para evitar leerlo varias veces.
         self._cache_df_log = None
@@ -1111,7 +1113,7 @@ class RegistroDefectosSMT:
         finally:
             self.dashboard_actualizando = False
 
-    def calcular_fpy_por_modelo(self,registros=None,columnas_defectos=None):
+    def calcular_fpy_por_modelo(self, registros=None, columnas_defectos=None):
         """Calcula y muestra las métricas de cada modelo por PCB."""
         for datos_tarjeta in self.tarjetas_modelos.values():
             datos_tarjeta["frame"].grid_remove()
@@ -1262,7 +1264,7 @@ class RegistroDefectosSMT:
             sticky="nsew"
         )
 
-    def actualizar_pareto_global(self,registros=None,columnas_defectos=None):
+    def actualizar_pareto_global(self, registros=None, columnas_defectos=None):
         """Genera el Pareto global mediante ocurrencias de defectos."""
         if registros is None or columnas_defectos is None:
             registros, columnas_defectos, error = (
@@ -1320,7 +1322,7 @@ class RegistroDefectosSMT:
             acumulado=acumulado
         )
 
-    def crear_grafica_pareto(self,nombres,cantidades,acumulado):
+    def crear_grafica_pareto(self, nombres, cantidades, acumulado):
         """
         Actualiza el Pareto sin destruir el canvas.
         """
@@ -1595,7 +1597,7 @@ class RegistroDefectosSMT:
             "Sin información para mostrar"
         )
 
-    def actualizar_tarjeta_fpy_modelo(self,modelo,numero_parte,fpy,inspeccionadas,buenas,defectuosas,defectos_encontrados,top_3_defectos,columna):
+    def actualizar_tarjeta_fpy_modelo(self, modelo, numero_parte, fpy, inspeccionadas, buenas, defectuosas, defectos_encontrados, top_3_defectos, columna):
         """Crea o actualiza una tarjeta de resultados por modelo."""
         color_fpy = self.obtener_color_fpy(fpy)
         texto_top = self.formatear_top_3_defectos(
@@ -3265,18 +3267,18 @@ class RegistroDefectosSMT:
         for existente in self.defectos_pcb_actual:
 
             mismo_defecto = (
-                    existente.get("defecto", "").casefold()
-                    == defecto.casefold()
+                existente.get("defecto", "").casefold()
+                == defecto.casefold()
             )
 
             misma_posicion = (
-                    existente.get("posicion", "").casefold()
-                    == posicion.casefold()
+                existente.get("posicion", "").casefold()
+                == posicion.casefold()
             )
 
             misma_descripcion = (
-                    existente.get("descripcion", "").casefold()
-                    == registro.get("descripcion", "").casefold()
+                existente.get("descripcion", "").casefold()
+                == registro.get("descripcion", "").casefold()
             )
 
             if (
@@ -4593,9 +4595,9 @@ class RegistroDefectosSMT:
         Actualiza el análisis completo de defectos.
         """
 
-        #import pandas as pd
-        #from matplotlib.figure import Figure
-        #from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg)
+        # import pandas as pd
+        # from matplotlib.figure import Figure
+        # from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg)
 
         fecha = (
             self.selector_fecha_analisis
@@ -5017,7 +5019,7 @@ class RegistroDefectosSMT:
             ]
         )
 
-    def procesar_defectos_pcb_para_guardar(self,registros_defectos):
+    def procesar_defectos_pcb_para_guardar(self, registros_defectos):
         """
         Convierte la lista de defectos en:
 
@@ -5066,7 +5068,7 @@ class RegistroDefectosSMT:
 
             else:
                 cantidades[defecto] = (
-                        cantidades.get(defecto, 0) + 1
+                    cantidades.get(defecto, 0) + 1
                 )
 
                 nombre_detalle = defecto
@@ -5144,8 +5146,9 @@ class RegistroDefectosSMT:
             self.ventana_analisis_defectos
         )
         ventana.title("Análisis de posiciones de defectos")
-        #ventana.geometry("1300x800")
-        ventana.minsize(1000, 650)
+        # ventana.geometry("1300x800")
+        # ventana.minsize(1000, 650)
+        ventana.after(120, lambda: ventana.state("zoomed"))
         ventana.transient(self.ventana_analisis_defectos)
         ventana.grid_columnconfigure(0, weight=1)
         ventana.grid_rowconfigure(1, weight=1)
@@ -5341,9 +5344,34 @@ class RegistroDefectosSMT:
             sticky="nsew"
         )
 
+        # HeatMap debajo
+        frame_heatmap = ctk.CTkFrame(
+            frame_graficas,
+            fg_color="transparent"
+        )
+
+        frame_heatmap.grid(
+            row=1,
+            column=0,
+            padx=5,
+            pady=(15, 10),
+            sticky="ew"
+        )
+
+        frame_heatmap.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        self.crear_heatmap_panel(
+            frame_heatmap,
+            df,
+            modelo
+        )
+
         # Mostrar primero la ventana y dibujar después.
         ventana.after(100, canvas.draw_idle)
-        ventana.after(120, lambda: ventana.state("zoomed"))
+        # ventana.after(120, lambda: ventana.state("zoomed"))
 
         ventana.figura_defectos_posicion = figura
         ventana.canvas_defectos_posicion = canvas
@@ -5406,8 +5434,8 @@ class RegistroDefectosSMT:
 
         for detalle_completo in (
                 df["DetalleDefectos"]
-                        .fillna("")
-                        .astype(str)
+            .fillna("")
+            .astype(str)
         ):
             detalle_completo = detalle_completo.strip()
 
@@ -5463,6 +5491,796 @@ class RegistroDefectosSMT:
                     ][posicion] = cantidad_actual + 1
 
         return defectos_agrupados
+
+    def obtener_datos_heatmap_pcb(self, df):
+        """
+        Agrupa los defectos por posición física del panel.
+
+        Resultado aproximado:
+        {
+            1: {
+                "total_defectos": 5,
+                "pcb_fail": 3,
+                "ids": [...],
+                "defectos": {
+                    "Efecto lapida": {
+                        "cantidad": 3,
+                        "posiciones": {
+                            "C10": 2,
+                            "R5": 1
+                        }
+                    }
+                }
+            }
+        }
+        """
+
+        datos_heatmap = {}
+
+        if df.empty or "Posicion" not in df.columns:
+            return datos_heatmap
+
+        for _, fila in df.iterrows():
+
+            posicion_texto = str(
+                fila.get("Posicion", "")
+            ).strip()
+
+            # Acepta:
+            # PCB 1
+            # PCB1
+            # 1
+            numeros = "".join(
+                caracter
+                for caracter in posicion_texto
+                if caracter.isdigit()
+            )
+
+            if not numeros:
+                continue
+
+            numero_pcb = int(numeros)
+
+            if numero_pcb not in datos_heatmap:
+                datos_heatmap[numero_pcb] = {
+                    "total_defectos": 0,
+                    "pcb_fail": 0,
+                    "ids": [],
+                    "sesiones": set(),
+                    "defectos": {}
+                }
+
+            datos_pcb = datos_heatmap[numero_pcb]
+
+            resultado = str(
+                fila.get("Resultado", "")
+            ).strip().upper()
+
+            if resultado != "FAIL":
+                continue
+
+            datos_pcb["pcb_fail"] += 1
+
+            identificador = str(
+                fila.get("ID_PCB", "")
+            ).strip()
+
+            if (
+                identificador
+                and identificador.lower() != "nan"
+                and identificador not in datos_pcb["ids"]
+            ):
+                datos_pcb["ids"].append(
+                    identificador
+                )
+
+            sesion = str(
+                fila.get("Sesion", "")
+            ).strip()
+
+            if sesion and sesion.lower() != "nan":
+                datos_pcb["sesiones"].add(
+                    sesion
+                )
+
+            detalle = str(
+                fila.get("DetalleDefectos", "")
+            ).strip()
+
+            if (
+                not detalle
+                or detalle.lower() == "nan"
+            ):
+                continue
+
+            grupos = detalle.split("|")
+
+            for grupo in grupos:
+
+                grupo = grupo.strip()
+
+                if not grupo or ":" not in grupo:
+                    continue
+
+                nombre_defecto, posiciones_texto = (
+                    grupo.rsplit(":", 1)
+                )
+
+                nombre_defecto = (
+                    nombre_defecto.strip()
+                )
+
+                posiciones_componentes = [
+                    posicion.strip().upper()
+                    for posicion
+                    in posiciones_texto.split(",")
+                    if posicion.strip()
+                ]
+
+                if not nombre_defecto:
+                    continue
+
+                if nombre_defecto not in datos_pcb["defectos"]:
+                    datos_pcb["defectos"][nombre_defecto] = {
+                        "cantidad": 0,
+                        "posiciones": {}
+                    }
+
+                datos_defecto = datos_pcb[
+                    "defectos"
+                ][nombre_defecto]
+
+                for posicion_componente in posiciones_componentes:
+
+                    datos_defecto["cantidad"] += 1
+                    datos_pcb["total_defectos"] += 1
+
+                    datos_defecto["posiciones"][
+                        posicion_componente
+                    ] = (
+                        datos_defecto["posiciones"].get(
+                            posicion_componente,
+                            0
+                        )
+                        + 1
+                    )
+
+        return datos_heatmap
+
+    @staticmethod
+    def obtener_color_heatmap_pcb(
+        cantidad,
+        cantidad_maxima
+    ):
+        """
+        Retorna el color de una PCB según su número de defectos.
+        """
+
+        if cantidad <= 0:
+            return "#3A3F5C", "#4A506F"
+
+        if cantidad_maxima <= 0:
+            cantidad_maxima = 1
+
+        porcentaje = cantidad / cantidad_maxima
+
+        if porcentaje <= 0.25:
+            return "#2E8B57", "#246B45"
+
+        if porcentaje <= 0.50:
+            return "#C9A227", "#A68420"
+
+        if porcentaje <= 0.75:
+            return "#D97706", "#B45309"
+
+        return "#C24155", "#9F3345"
+
+    def crear_heatmap_panel(
+        self,
+        contenedor,
+        df,
+        modelo
+    ):
+        """
+        Crea el mapa de calor interactivo del panel.
+        """
+
+        # El mapa necesita conocer la geometría exacta.
+        if modelo == "Todos los modelos":
+
+            frame_aviso = ctk.CTkFrame(
+                contenedor,
+                corner_radius=12,
+                fg_color="#252842",
+                border_width=1,
+                border_color="#454B70"
+            )
+
+            frame_aviso.grid(
+                row=0,
+                column=0,
+                padx=10,
+                pady=10,
+                sticky="ew"
+            )
+
+            ctk.CTkLabel(
+                frame_aviso,
+                text="MAPA DE CALOR DEL PANEL",
+                font=("Arial", 18, "bold"),
+                text_color="#DDE2FF"
+            ).pack(
+                pady=(15, 5)
+            )
+
+            ctk.CTkLabel(
+                frame_aviso,
+                text=(
+                    "Seleccione un modelo específico para mostrar "
+                    "la distribución física de sus PCB."
+                ),
+                font=("Arial", 14),
+                text_color="#AEB4D0"
+            ).pack(
+                pady=(0, 15)
+            )
+
+            return
+
+        configuracion = self.configuracion_modelos.get(
+            modelo
+        )
+
+        if not configuracion:
+            return
+
+        renglones = configuracion["renglones"]
+        columnas = configuracion["columnas"]
+        total_pcb = configuracion["total_pcb"]
+
+        self.datos_heatmap_pcb = (
+            self.obtener_datos_heatmap_pcb(df)
+        )
+
+        cantidad_maxima = max(
+            (
+                datos["total_defectos"]
+                for datos
+                in self.datos_heatmap_pcb.values()
+            ),
+            default=0
+        )
+
+        # =====================================================
+        # TARJETA PRINCIPAL
+        # =====================================================
+
+        tarjeta_heatmap = ctk.CTkFrame(
+            contenedor,
+            corner_radius=12,
+            fg_color="#252842",
+            border_width=1,
+            border_color="#454B70"
+        )
+
+        tarjeta_heatmap.grid(
+            row=0,
+            column=0,
+            padx=10,
+            pady=10,
+            sticky="nsew"
+        )
+
+        tarjeta_heatmap.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        ctk.CTkLabel(
+            tarjeta_heatmap,
+            text="MAPA DE CALOR DEL PANEL",
+            font=("Arial", 20, "bold"),
+            text_color="#DDE2FF"
+        ).grid(
+            row=0,
+            column=0,
+            padx=15,
+            pady=(15, 2)
+        )
+
+        ctk.CTkLabel(
+            tarjeta_heatmap,
+            text=(
+                f"{modelo}  |  "
+                f"Configuración: {renglones} × {columnas}  |  "
+                f"Total PCB: {total_pcb}"
+            ),
+            font=("Arial", 14, "bold"),
+            text_color="#AEB4D0"
+        ).grid(
+            row=1,
+            column=0,
+            padx=15,
+            pady=(0, 4)
+        )
+
+        ctk.CTkLabel(
+            tarjeta_heatmap,
+            text=(
+                "Presione una PCB para consultar sus defectos, "
+                "componentes e identificadores."
+            ),
+            font=("Arial", 13),
+            text_color="#79C2FF"
+        ).grid(
+            row=2,
+            column=0,
+            padx=15,
+            pady=(0, 10)
+        )
+
+        # =====================================================
+        # CUADRÍCULA DEL PANEL
+        # =====================================================
+
+        frame_panel = ctk.CTkFrame(
+            tarjeta_heatmap,
+            fg_color="#1F2238",
+            corner_radius=12
+        )
+
+        frame_panel.grid(
+            row=3,
+            column=0,
+            padx=20,
+            pady=10
+        )
+
+        for columna in range(columnas):
+            frame_panel.grid_columnconfigure(
+                columna,
+                weight=1,
+                uniform="heatmap_pcb"
+            )
+
+        numero_pcb = 1
+
+        for renglon in range(renglones):
+            for columna in range(columnas):
+
+                datos_pcb = self.datos_heatmap_pcb.get(
+                    numero_pcb,
+                    {}
+                )
+
+                cantidad = datos_pcb.get(
+                    "total_defectos",
+                    0
+                )
+
+                pcb_fail = datos_pcb.get(
+                    "pcb_fail",
+                    0
+                )
+
+                color, hover = (
+                    self.obtener_color_heatmap_pcb(
+                        cantidad,
+                        cantidad_maxima
+                    )
+                )
+
+                texto_boton = (
+                    f"PCB {numero_pcb}\n"
+                    f"{cantidad} defecto"
+                )
+
+                if cantidad != 1:
+                    texto_boton += "s"
+
+                if pcb_fail > 0:
+                    texto_boton += (
+                        f"\n{pcb_fail} FAIL"
+                    )
+
+                boton = ctk.CTkButton(
+                    frame_panel,
+                    text=texto_boton,
+                    width=145,
+                    height=82,
+                    corner_radius=10,
+                    font=("Arial", 14, "bold"),
+                    fg_color=color,
+                    hover_color=hover,
+                    command=lambda pcb=numero_pcb: (
+                        self.mostrar_detalle_pcb_heatmap(
+                            pcb,
+                            modelo
+                        )
+                    )
+                )
+
+                boton.grid(
+                    row=renglon,
+                    column=columna,
+                    padx=7,
+                    pady=7,
+                    sticky="nsew"
+                )
+
+                numero_pcb += 1
+
+        # =====================================================
+        # LEYENDA
+        # =====================================================
+
+        frame_leyenda = ctk.CTkFrame(
+            tarjeta_heatmap,
+            fg_color="transparent"
+        )
+
+        frame_leyenda.grid(
+            row=4,
+            column=0,
+            padx=20,
+            pady=(5, 15)
+        )
+
+        leyenda = [
+            ("Sin defectos", "#3A3F5C"),
+            ("Frecuencia baja", "#2E8B57"),
+            ("Frecuencia media", "#C9A227"),
+            ("Frecuencia alta", "#D97706"),
+            ("Posición crítica", "#C24155")
+        ]
+
+        for indice, (
+            texto,
+            color
+        ) in enumerate(leyenda):
+
+            indicador = ctk.CTkLabel(
+                frame_leyenda,
+                text=f"  {texto}  ",
+                height=27,
+                corner_radius=6,
+                fg_color=color,
+                font=("Arial", 11, "bold"),
+                text_color="#FFFFFF"
+            )
+
+            indicador.grid(
+                row=0,
+                column=indice,
+                padx=4
+            )
+
+    def mostrar_detalle_pcb_heatmap(
+        self,
+        numero_pcb,
+        modelo
+    ):
+        """
+        Muestra los defectos encontrados en una posición del panel.
+        """
+
+        datos_pcb = self.datos_heatmap_pcb.get(
+            numero_pcb,
+            {
+                "total_defectos": 0,
+                "pcb_fail": 0,
+                "ids": [],
+                "sesiones": set(),
+                "defectos": {}
+            }
+        )
+
+        ventana = ctk.CTkToplevel(
+            self.ventana_analisis_defectos
+        )
+
+        ventana.title(
+            f"Detalle PCB {numero_pcb}"
+        )
+
+        ventana.geometry("760x650")
+        ventana.minsize(650, 520)
+
+        ventana.after(
+            100,
+            lambda: (
+                ventana.lift(),
+                ventana.focus_force(),
+                ventana.attributes("-topmost", True),
+                ventana.after(
+                    300,
+                    lambda: ventana.attributes(
+                        "-topmost",
+                        False
+                    )
+                )
+            )
+        )
+
+        ventana.transient(
+            self.ventana_analisis_defectos
+        )
+
+        ventana.grab_set()
+
+        ventana.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        ventana.grid_rowconfigure(
+            2,
+            weight=1
+        )
+
+        def cerrar_detalle_pcb():
+            try:
+                ventana.grab_release()
+            except tk.TclError:
+                pass
+
+            ventana.destroy()
+
+        ventana.protocol(
+            "WM_DELETE_WINDOW",
+            cerrar_detalle_pcb
+        )
+
+        # =====================================================
+        # ENCABEZADO
+        # =====================================================
+
+        frame_encabezado = ctk.CTkFrame(
+            ventana,
+            corner_radius=12,
+            fg_color="#252842"
+        )
+
+        frame_encabezado.grid(
+            row=0,
+            column=0,
+            padx=15,
+            pady=(15, 8),
+            sticky="ew"
+        )
+
+        ctk.CTkLabel(
+            frame_encabezado,
+            text=f"PCB {numero_pcb}",
+            font=("Arial", 28, "bold"),
+            text_color="#FFFFFF"
+        ).pack(
+            pady=(14, 2)
+        )
+
+        ctk.CTkLabel(
+            frame_encabezado,
+            text=modelo,
+            font=("Arial", 15, "bold"),
+            text_color="#AEB4D0"
+        ).pack(
+            pady=(0, 5)
+        )
+
+        ctk.CTkLabel(
+            frame_encabezado,
+            text=(
+                f"Defectos registrados: "
+                f"{datos_pcb['total_defectos']}     |     "
+                f"PCB defectuosas: {datos_pcb['pcb_fail']}     |     "
+                f"Paneles afectados: {len(datos_pcb['sesiones'])}"
+            ),
+            font=("Arial", 14, "bold"),
+            text_color="#6FE3A1"
+        ).pack(
+            pady=(0, 14)
+        )
+
+        # =====================================================
+        # IDENTIFICADORES
+        # =====================================================
+
+        ids = datos_pcb.get(
+            "ids",
+            []
+        )
+
+        texto_ids = (
+            ", ".join(ids)
+            if ids
+            else "Sin identificadores defectuosos registrados"
+        )
+
+        frame_ids = ctk.CTkFrame(
+            ventana,
+            corner_radius=10,
+            fg_color="#292C47"
+        )
+
+        frame_ids.grid(
+            row=1,
+            column=0,
+            padx=15,
+            pady=8,
+            sticky="ew"
+        )
+
+        ctk.CTkLabel(
+            frame_ids,
+            text="ID DE PCB DEFECTUOSAS",
+            font=("Arial", 13, "bold"),
+            text_color="#79C2FF"
+        ).pack(
+            pady=(10, 3)
+        )
+
+        ctk.CTkLabel(
+            frame_ids,
+            text=texto_ids,
+            font=("Arial", 13),
+            text_color="#DDE2FF",
+            wraplength=690
+        ).pack(
+            padx=15,
+            pady=(0, 10)
+        )
+
+        # =====================================================
+        # LISTADO DE DEFECTOS
+        # =====================================================
+
+        frame_lista = ctk.CTkScrollableFrame(
+            ventana,
+            corner_radius=10,
+            fg_color="#1F2238",
+            label_text="Defectos y componentes encontrados",
+            label_font=("Arial", 14, "bold")
+        )
+
+        frame_lista.grid(
+            row=2,
+            column=0,
+            padx=15,
+            pady=(8, 15),
+            sticky="nsew"
+        )
+
+        frame_lista.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        defectos = datos_pcb.get(
+            "defectos",
+            {}
+        )
+
+        if not defectos:
+
+            ctk.CTkLabel(
+                frame_lista,
+                text=(
+                    "No existen defectos registrados "
+                    "para esta posición del panel."
+                ),
+                font=("Arial", 15),
+                text_color="#AEB4D0"
+            ).grid(
+                row=0,
+                column=0,
+                padx=15,
+                pady=30
+            )
+
+            return
+
+        defectos_ordenados = sorted(
+            defectos.items(),
+            key=lambda elemento: elemento[1]["cantidad"],
+            reverse=True
+        )
+
+        for indice, (
+            nombre_defecto,
+            informacion
+        ) in enumerate(defectos_ordenados):
+
+            tarjeta = ctk.CTkFrame(
+                frame_lista,
+                corner_radius=9,
+                fg_color="#30344F",
+                border_width=1,
+                border_color="#454B70"
+            )
+
+            tarjeta.grid(
+                row=indice,
+                column=0,
+                padx=8,
+                pady=6,
+                sticky="ew"
+            )
+
+            tarjeta.grid_columnconfigure(
+                0,
+                weight=1
+            )
+
+            ctk.CTkLabel(
+                tarjeta,
+                text=nombre_defecto,
+                font=("Arial", 15, "bold"),
+                text_color="#FFFFFF",
+                anchor="w"
+            ).grid(
+                row=0,
+                column=0,
+                padx=12,
+                pady=(10, 2),
+                sticky="ew"
+            )
+
+            ctk.CTkLabel(
+                tarjeta,
+                text=(
+                    f"{informacion['cantidad']} ocurrencia"
+                    + (
+                        ""
+                        if informacion["cantidad"] == 1
+                        else "s"
+                    )
+                ),
+                font=("Arial", 13, "bold"),
+                text_color="#6FE3A1"
+            ).grid(
+                row=0,
+                column=1,
+                padx=12,
+                pady=(10, 2)
+            )
+
+            posiciones_ordenadas = sorted(
+                informacion["posiciones"].items(),
+                key=lambda elemento: (
+                    -elemento[1],
+                    elemento[0]
+                )
+            )
+
+            texto_posiciones = "   |   ".join(
+                (
+                    f"{posicion}: {cantidad}"
+                    if cantidad > 1
+                    else posicion
+                )
+                for posicion, cantidad
+                in posiciones_ordenadas
+            )
+
+            ctk.CTkLabel(
+                tarjeta,
+                text=(
+                    f"Componentes: {texto_posiciones}"
+                ),
+                font=("Arial", 13),
+                text_color="#DDE2FF",
+                anchor="w",
+                justify="left",
+                wraplength=650
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                padx=12,
+                pady=(2, 10),
+                sticky="ew"
+            )
+
 
 if __name__ == "__main__":
     ctk.set_appearance_mode("dark")

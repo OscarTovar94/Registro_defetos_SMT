@@ -1,1 +1,1 @@
-pyinstaller --collect-all babel --collect-all tkcalendar --onedir --noconsole --clean --icon="C:\Registro_defetos_SMT\Image\elrad.ico" Registro_defectos_SMT.py
+pyinstaller --collect-all babel --collect-all tkcalendar --onedir --noconsole --clean --icon="C:\Registro_defetos_SMT\Image\elrad.ico" Registro_defectos_SMT_Rev3.py
