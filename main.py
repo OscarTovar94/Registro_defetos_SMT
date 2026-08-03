@@ -1,22 +1,3 @@
-"""
-------------------------------------------------------------
-Proyecto: Registro de defectos SMT
-Autor: Oscar Tovar
-Versión: 3.0
-------------------------------------------------------------
-
-Historial de Revisiones
-
-Rev. 1.0 - 21/07/2026
-- Creación inicial de la aplicación.
-Rev. 2.0 - 28/07/2026
-- Cambio en el registro de defectos.
-- Registros por PCB.
-- Validación de ID
-Rev. 3.0 - 28/07/2026
-- Registro por posiciones.
-------------------------------------------------------------
-"""
 import csv
 import os
 from datetime import datetime, date
