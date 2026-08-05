@@ -1,20 +1,8 @@
-"""
-------------------------------------------------------------
-Proyecto: Registro de defectos SMT
-Autor: Oscar Tovar
-Versión: 2.0
-------------------------------------------------------------
-
-Historial de Revisiones
-
-Rev 1.0 - 21/07/2026
-- Creación inicial de la aplicación.
-Rev 2.0 - 28/07/2026
-- Cambio en el registro de defectos.
-------------------------------------------------------------
-"""
 import csv
 import os
+import ctypes
+import subprocess
+from ctypes import wintypes
 from datetime import datetime, date
 from tkinter import messagebox
 import tkinter as tk
@@ -103,14 +91,26 @@ class RegistroDefectosSMT:
         self.indice_pcb_defecto_actual = 0
         self.ventana_analisis_defectos = None
         self.canvas_analisis_defectos = None
+        self.figura_analisis_defectos = None
         self.frame_dashboard_analisis = None
+        self.ventana_detalle_pcb_heatmap = None
+        self.datos_heatmap_pcb = {}
+        self.proceso_teclado_virtual = None
+        self.hwnd_teclado_virtual = None
+        self.after_teclado_virtual = None
 
-        self.defectos_pcb_actual = {}
+        # Caché del archivo CSV para evitar leerlo varias veces.
+        self._cache_df_log = None
+        self._cache_log_mtime = None
+        self._cache_log_size = None
+
+        self.defectos_pcb_actual = []
         self.filas_defectos_pcb = {}
         self.guardando_panel = False
         self.opcion_seleccionar_panel = "Seleccionar modelo"
         self.opcion_otro = "Otro"
         self.descripcion_otro_pcb = ctk.StringVar(value="")
+        self.posicion_defecto_pcb = ctk.StringVar(value="")
 
         self.root.protocol(
             "WM_DELETE_WINDOW",
@@ -797,78 +797,159 @@ class RegistroDefectosSMT:
         except OSError:
             return None
 
-    def cargar_datos_dashboard(self):
-        """Lee LogFilePCB.csv y filtra los registros por la fecha seleccionada."""
-        if not os.path.exists(self.archivo_log_pcb):
-            return [], [], "No existe LogFilePCB.csv"
+    def invalidar_cache_log(self):
+        """Invalida el caché del archivo LogFilePCB.csv."""
+        self._cache_df_log = None
+        self._cache_log_mtime = None
+        self._cache_log_size = None
 
-        if os.path.getsize(self.archivo_log_pcb) == 0:
-            return [], [], "LogFilePCB.csv está vacío"
+    def cargar_dataframe_log_cache(self):
+        """
+        Lee LogFilePCB.csv solamente cuando el archivo cambió.
+
+        Retorna una copia del DataFrame para que los filtros no
+        modifiquen el caché original.
+        """
+        if not os.path.exists(self.archivo_log_pcb):
+            return pd.DataFrame()
+
+        try:
+            mtime = os.path.getmtime(self.archivo_log_pcb)
+            size = os.path.getsize(self.archivo_log_pcb)
+        except OSError:
+            return pd.DataFrame()
+
+        if size == 0:
+            return pd.DataFrame()
+
+        if (
+            self._cache_df_log is None
+            or self._cache_log_mtime != mtime
+            or self._cache_log_size != size
+        ):
+            try:
+                df = pd.read_csv(
+                    self.archivo_log_pcb,
+                    encoding="utf-8-sig",
+                    low_memory=False,
+                    keep_default_na=False,
+                    dtype={
+                        "Sesion": str,
+                        "Modelo": str,
+                        "NumeroParte": str,
+                        "Posicion": str,
+                        "ID_PCB": str,
+                        "Resultado": str,
+                        "DescripcionOtro": str,
+                        "DetalleDefectos": str,
+                        "Fecha/Hora": str
+                    }
+                )
+            except (OSError, pd.errors.ParserError, UnicodeError):
+                return pd.DataFrame()
+
+            if "Fecha/Hora" in df.columns:
+                df["FechaHoraConvertida"] = pd.to_datetime(
+                    df["Fecha/Hora"],
+                    dayfirst=True,
+                    errors="coerce"
+                )
+
+            self._cache_df_log = df
+            self._cache_log_mtime = mtime
+            self._cache_log_size = size
+
+        return self._cache_df_log.copy()
+
+    def cargar_datos_dashboard(self):
+        """Filtra los registros del dashboard usando el CSV en caché."""
+        df = self.cargar_dataframe_log_cache()
+
+        if df.empty:
+            return [], [], "Sin datos disponibles en LogFilePCB.csv"
 
         columnas_fijas = {
             "Sesion", "Modelo", "NumeroParte", "Posicion", "Renglon",
-            "Columna", "ID_PCB", "Resultado", "Defectos", "DescripcionOtro", "Fecha/Hora"
+            "Columna", "ID_PCB", "Resultado", "Defectos",
+            "DescripcionOtro", "DetalleDefectos", "Fecha/Hora",
+            "FechaHoraConvertida"
         }
 
-        try:
-            with open(
-                self.archivo_log_pcb,
-                mode="r",
-                newline="",
-                encoding="utf-8-sig"
-            ) as archivo:
-                lector = csv.DictReader(archivo)
-                encabezados = lector.fieldnames or []
+        columnas_requeridas = {
+            "Modelo", "NumeroParte", "Resultado",
+            "Defectos", "Fecha/Hora"
+        }
 
-                columnas_requeridas = {
-                    "Modelo", "NumeroParte", "Resultado",
-                    "Defectos", "Fecha/Hora"
-                }
-
-                if not columnas_requeridas.issubset(encabezados):
-                    return [], [], (
-                        "LogFilePCB.csv no contiene las columnas requeridas"
-                    )
-
-                columnas_defectos = [
-                    columna
-                    for columna in encabezados
-                    if columna not in columnas_fijas
-                ]
-
-                fecha_seleccionada = self.selector_fecha.get_date()
-                registros = []
-
-                for fila in lector:
-                    fecha_texto = fila.get("Fecha/Hora", "").strip()
-
-                    try:
-                        fecha_registro = datetime.strptime(
-                            fecha_texto,
-                            "%d/%m/%Y %H:%M:%S"
-                        ).date()
-                    except ValueError:
-                        continue
-
-                    if fecha_registro != fecha_seleccionada:
-                        continue
-
-                    resultado = fila.get("Resultado", "").strip().upper()
-
-                    if resultado not in {"PASS", "FAIL"}:
-                        continue
-
-                    registros.append(fila)
-
-                return registros, columnas_defectos, ""
-
-        except PermissionError:
+        if not columnas_requeridas.issubset(df.columns):
             return [], [], (
-                "LogFilePCB.csv está siendo utilizado por otro programa"
+                "LogFilePCB.csv no contiene las columnas requeridas"
             )
 
-        except OSError as error:
-            return [], [], f"No fue posible leer LogFilePCB.csv: {error}"
+        columnas_defectos = [
+            columna
+            for columna in df.columns
+            if columna not in columnas_fijas
+        ]
+
+        fecha_seleccionada = self.selector_fecha.get_date()
+
+        if "FechaHoraConvertida" not in df.columns:
+            df["FechaHoraConvertida"] = pd.to_datetime(
+                df["Fecha/Hora"],
+                dayfirst=True,
+                errors="coerce"
+            )
+
+        mascara_fecha = (
+            df["FechaHoraConvertida"].dt.date
+            == fecha_seleccionada
+        )
+
+        resultados = (
+            df["Resultado"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+
+        df_filtrado = df[
+            mascara_fecha
+            & resultados.isin(["PASS", "FAIL"])
+        ].copy()
+
+        if df_filtrado.empty:
+            return [], columnas_defectos, ""
+
+        # Normalizar las columnas de texto antes de convertir el
+        # DataFrame en diccionarios. Pandas puede inferir NumeroParte
+        # e ID_PCB como números; el resto del programa espera texto.
+        columnas_texto = [
+            "Sesion",
+            "Modelo",
+            "NumeroParte",
+            "Posicion",
+            "ID_PCB",
+            "Resultado",
+            "DescripcionOtro",
+            "DetalleDefectos",
+            "Fecha/Hora"
+        ]
+
+        for columna in columnas_texto:
+            if columna in df_filtrado.columns:
+                df_filtrado[columna] = (
+                    df_filtrado[columna]
+                    .fillna("")
+                    .astype(str)
+                )
+
+        registros = df_filtrado.drop(
+            columns=["FechaHoraConvertida"],
+            errors="ignore"
+        ).to_dict("records")
+
+        return registros, columnas_defectos, ""
 
     @staticmethod
     def convertir_entero(valor):
@@ -1019,7 +1100,7 @@ class RegistroDefectosSMT:
         finally:
             self.dashboard_actualizando = False
 
-    def calcular_fpy_por_modelo(self,registros=None,columnas_defectos=None):
+    def calcular_fpy_por_modelo(self, registros=None, columnas_defectos=None):
         """Calcula y muestra las métricas de cada modelo por PCB."""
         for datos_tarjeta in self.tarjetas_modelos.values():
             datos_tarjeta["frame"].grid_remove()
@@ -1042,13 +1123,13 @@ class RegistroDefectosSMT:
         datos_modelos = {}
 
         for fila in registros:
-            modelo = fila.get("Modelo", "").strip()
+            modelo = str(fila.get("Modelo", "") or "").strip()
 
             if not modelo:
                 continue
 
-            resultado = fila.get("Resultado", "").strip().upper()
-            numero_parte = fila.get("NumeroParte", "").strip()
+            resultado = str(fila.get("Resultado", "") or "").strip().upper()
+            numero_parte = str(fila.get("NumeroParte", "") or "").strip()
 
             if modelo not in datos_modelos:
                 datos_modelos[modelo] = {
@@ -1170,7 +1251,7 @@ class RegistroDefectosSMT:
             sticky="nsew"
         )
 
-    def actualizar_pareto_global(self,registros=None,columnas_defectos=None):
+    def actualizar_pareto_global(self, registros=None, columnas_defectos=None):
         """Genera el Pareto global mediante ocurrencias de defectos."""
         if registros is None or columnas_defectos is None:
             registros, columnas_defectos, error = (
@@ -1228,7 +1309,7 @@ class RegistroDefectosSMT:
             acumulado=acumulado
         )
 
-    def crear_grafica_pareto(self,nombres,cantidades,acumulado):
+    def crear_grafica_pareto(self, nombres, cantidades, acumulado):
         """
         Actualiza el Pareto sin destruir el canvas.
         """
@@ -1503,7 +1584,7 @@ class RegistroDefectosSMT:
             "Sin información para mostrar"
         )
 
-    def actualizar_tarjeta_fpy_modelo(self,modelo,numero_parte,fpy,inspeccionadas,buenas,defectuosas,defectos_encontrados,top_3_defectos,columna):
+    def actualizar_tarjeta_fpy_modelo(self, modelo, numero_parte, fpy, inspeccionadas, buenas, defectuosas, defectos_encontrados, top_3_defectos, columna):
         """Crea o actualiza una tarjeta de resultados por modelo."""
         color_fpy = self.obtener_color_fpy(fpy)
         texto_top = self.formatear_top_3_defectos(
@@ -1946,7 +2027,7 @@ class RegistroDefectosSMT:
                 "posicion": posicion,
                 "id_pcb": "",
                 "resultado": "FAIL",
-                "defectos": {},
+                "defectos": [],
                 "estado": "PENDIENTE_ID"
             }
 
@@ -2458,7 +2539,7 @@ class RegistroDefectosSMT:
 
     def confirmar_ids_pcb(self):
         """
-        Valida todos los ID y los guarda en panel_actual.
+        Válida todos los ID y los guarda en panel_actual.
         """
 
         errores = []
@@ -2826,8 +2907,8 @@ class RegistroDefectosSMT:
         self.lbl_instruccion_defectos = ctk.CTkLabel(
             frame_contenido,
             text=(
-                "Seleccione un defecto, indique la cantidad "
-                "y agréguelo a la PCB."
+                "Seleccione un defecto, indique la posición "
+                "del componente y agréguelo a la PCB."
             ),
             font=("Arial", 14),
             text_color="#DDE2FF"
@@ -2878,21 +2959,27 @@ class RegistroDefectosSMT:
             sticky="ew"
         )
 
-        self.cantidad_defecto_pcb = ctk.StringVar(value="1")
-
-        self.entry_cantidad_defecto_pcb = ctk.CTkEntry(
+        self.entry_posicion_defecto_pcb = ctk.CTkEntry(
             frame_captura,
-            textvariable=self.cantidad_defecto_pcb,
+            textvariable=self.posicion_defecto_pcb,
             height=38,
-            justify="center",
-            font=("Arial", 15)
+            font=("Arial", 15),
+            placeholder_text="Ejemplo: C10"
         )
 
-        self.entry_cantidad_defecto_pcb.grid(
+        self.entry_posicion_defecto_pcb.grid(
             row=0,
             column=1,
-            padx=8,
+            padx=(10, 10),
             sticky="ew"
+        )
+
+        self.entry_posicion_defecto_pcb.bind(
+            "<Button-1>",
+            lambda event: self.root.after(
+                150,
+                self.mostrar_teclado_virtual
+            )
         )
 
         self.btn_agregar_defecto_pcb = ctk.CTkButton(
@@ -2954,6 +3041,14 @@ class RegistroDefectosSMT:
             row=0,
             column=1,
             sticky="ew"
+        )
+
+        self.entry_descripcion_otro.bind(
+            "<Button-1>",
+            lambda event: self.root.after(
+                150,
+                self.mostrar_teclado_virtual
+            )
         )
 
         # Oculto hasta seleccionar Otro
@@ -3065,15 +3160,15 @@ class RegistroDefectosSMT:
         progreso = numero_actual / total
         self.barra_progreso_defectos.set(progreso)
 
-        self.defectos_pcb_actual = dict(
-            datos_pcb.get("defectos", {})
+        self.defectos_pcb_actual = list(
+            datos_pcb.get("defectos", [])
         )
 
         self.defecto_pcb_seleccionado.set(
             "Seleccione un defecto"
         )
 
-        self.cantidad_defecto_pcb.set("1")
+        self.posicion_defecto_pcb.set("")
         self.descripcion_otro_pcb.set("")
         self.frame_descripcion_otro.grid_remove()
 
@@ -3090,18 +3185,25 @@ class RegistroDefectosSMT:
 
     def agregar_defecto_pcb_actual(self):
         """
-        Agrega o acumula un defecto en la PCB actual.
-
-        Cuando se selecciona Otro, la descripción forma parte de la
-        identificación interna del defecto.
+        Registra una ocurrencia de defecto con su posición física.
         """
 
-        defecto = self.defecto_pcb_seleccionado.get().strip()
-        cantidad_texto = self.cantidad_defecto_pcb.get().strip()
+        defecto = (
+            self.defecto_pcb_seleccionado
+            .get()
+            .strip()
+        )
+
+        posicion = (
+            self.posicion_defecto_pcb
+            .get()
+            .strip()
+            .upper()
+        )
 
         if (
-            not defecto
-            or defecto == "Seleccione un defecto"
+                not defecto
+                or defecto == "Seleccione un defecto"
         ):
             messagebox.showwarning(
                 "Defecto requerido",
@@ -3110,30 +3212,40 @@ class RegistroDefectosSMT:
             )
             return
 
-        try:
-            cantidad = int(cantidad_texto)
-        except ValueError:
+        if not posicion:
             messagebox.showwarning(
-                "Cantidad incorrecta",
-                "La cantidad debe ser un número entero.",
+                "Posición requerida",
+                (
+                    "Escriba la posición donde se encontró "
+                    "el defecto.\n\nEjemplo: C10, R25, U3."
+                ),
+                parent=self.ventana_registro_defectos
+            )
+
+            self.entry_posicion_defecto_pcb.focus_set()
+            return
+
+        if len(posicion) > 30:
+            messagebox.showwarning(
+                "Posición incorrecta",
+                "La posición no debe superar 30 caracteres.",
                 parent=self.ventana_registro_defectos
             )
             return
 
-        if cantidad <= 0:
-            messagebox.showwarning(
-                "Cantidad incorrecta",
-                "La cantidad debe ser mayor que cero.",
-                parent=self.ventana_registro_defectos
-            )
-            return
+        registro = {
+            "defecto": defecto,
+            "posicion": posicion
+        }
 
-        # -----------------------------------------------------
-        # DEFECTO PERSONALIZADO
-        # -----------------------------------------------------
+        # -------------------------------------------------
+        # DEFECTO OTRO
+        # -------------------------------------------------
         if defecto == self.opcion_otro:
+
             descripcion = (
-                self.descripcion_otro_pcb.get()
+                self.descripcion_otro_pcb
+                .get()
                 .strip()
             )
 
@@ -3141,7 +3253,7 @@ class RegistroDefectosSMT:
                 messagebox.showwarning(
                     "Descripción requerida",
                     (
-                        "Escriba una descripción para el defecto "
+                        'Escriba el nombre del defecto '
                         'seleccionado como "Otro".'
                     ),
                     parent=self.ventana_registro_defectos
@@ -3150,61 +3262,68 @@ class RegistroDefectosSMT:
                 self.entry_descripcion_otro.focus_set()
                 return
 
-            if len(descripcion) < 3:
+            registro["descripcion"] = descripcion
+
+        # -------------------------------------------------
+        # EVITAR DUPLICADO EXACTO
+        # -------------------------------------------------
+        for existente in self.defectos_pcb_actual:
+
+            mismo_defecto = (
+                existente.get("defecto", "").casefold()
+                == defecto.casefold()
+            )
+
+            misma_posicion = (
+                existente.get("posicion", "").casefold()
+                == posicion.casefold()
+            )
+
+            misma_descripcion = (
+                existente.get("descripcion", "").casefold()
+                == registro.get("descripcion", "").casefold()
+            )
+
+            if (
+                    mismo_defecto
+                    and misma_posicion
+                    and misma_descripcion
+            ):
                 messagebox.showwarning(
-                    "Descripción incorrecta",
+                    "Registro duplicado",
                     (
-                        "La descripción debe contener al menos "
-                        "3 caracteres."
+                        "Ese defecto ya fue registrado "
+                        f"en la posición {posicion}."
                     ),
                     parent=self.ventana_registro_defectos
                 )
                 return
 
-            if len(descripcion) > 100:
-                messagebox.showwarning(
-                    "Descripción demasiado larga",
-                    (
-                        "La descripción no debe superar "
-                        "los 100 caracteres."
-                    ),
-                    parent=self.ventana_registro_defectos
-                )
-                return
-
-            # La descripción queda diferenciada en memoria
-            clave_defecto = f"Otro: {descripcion}"
-
-        else:
-            clave_defecto = defecto
-
-        cantidad_actual = self.defectos_pcb_actual.get(
-            clave_defecto,
-            0
-        )
-
-        self.defectos_pcb_actual[clave_defecto] = (
-            cantidad_actual + cantidad
-        )
+        self.defectos_pcb_actual.append(registro)
+        self.ocultar_teclado_virtual()
 
         self.defecto_pcb_seleccionado.set(
             "Seleccione un defecto"
         )
 
-        self.cantidad_defecto_pcb.set("1")
+        self.posicion_defecto_pcb.set("")
         self.descripcion_otro_pcb.set("")
+
         self.frame_descripcion_otro.grid_remove()
 
         self.actualizar_lista_defectos_pcb()
 
+        # self.entry_posicion_defecto_pcb.focus_set()
+        self.combo_defectos_pcb.focus_set()
+
     def actualizar_lista_defectos_pcb(self):
         """
-        Actualiza visualmente los defectos agregados a la PCB.
+        Actualiza visualmente los defectos y posiciones agregados
+        a la PCB actual. Cada elemento de la lista representa una
+        ocurrencia real.
         """
 
-        for widget in (
-            self.frame_lista_defectos_pcb.winfo_children()
-        ):
+        for widget in self.frame_lista_defectos_pcb.winfo_children():
             widget.destroy()
 
         self.filas_defectos_pcb.clear()
@@ -3216,7 +3335,6 @@ class RegistroDefectosSMT:
                 font=("Arial", 14),
                 text_color="#AEB4D0"
             )
-
             lbl_vacio.grid(
                 row=0,
                 column=0,
@@ -3225,73 +3343,36 @@ class RegistroDefectosSMT:
             )
             return
 
-        for fila, (defecto, cantidad) in enumerate(
-            self.defectos_pcb_actual.items()
-        ):
+        for indice, registro in enumerate(self.defectos_pcb_actual):
             frame_fila = ctk.CTkFrame(
                 self.frame_lista_defectos_pcb,
                 fg_color="#30344F",
                 corner_radius=8
             )
-
             frame_fila.grid(
-                row=fila,
+                row=indice,
                 column=0,
                 padx=8,
                 pady=5,
                 sticky="ew"
             )
-
             frame_fila.grid_columnconfigure(0, weight=1)
+
+            texto = self.construir_texto_registro_defecto(registro)
 
             lbl_defecto = ctk.CTkLabel(
                 frame_fila,
-                text=defecto,
+                text=texto,
                 font=("Arial", 14, "bold"),
                 text_color="#FFFFFF",
                 anchor="w"
             )
-
             lbl_defecto.grid(
                 row=0,
                 column=0,
                 padx=12,
                 pady=10,
                 sticky="ew"
-            )
-
-            lbl_cantidad = ctk.CTkLabel(
-                frame_fila,
-                text=f"Cantidad: {cantidad}",
-                width=115,
-                font=("Arial", 14, "bold"),
-                text_color="#6FE3A1"
-            )
-
-            lbl_cantidad.grid(
-                row=0,
-                column=1,
-                padx=8,
-                pady=10
-            )
-
-            btn_restar = ctk.CTkButton(
-                frame_fila,
-                text="−",
-                width=38,
-                height=30,
-                font=("Arial", 18, "bold"),
-                fg_color="#D97706",
-                hover_color="#B45309",
-                command=lambda d=defecto: (
-                    self.restar_defecto_pcb(d)
-                )
-            )
-
-            btn_restar.grid(
-                row=0,
-                column=2,
-                padx=4
             )
 
             btn_eliminar = ctk.CTkButton(
@@ -3302,61 +3383,24 @@ class RegistroDefectosSMT:
                 font=("Arial", 13, "bold"),
                 fg_color="#C24155",
                 hover_color="#9F3345",
-                command=lambda d=defecto: (
-                    self.eliminar_defecto_pcb(d)
+                command=lambda i=indice: (
+                    self.eliminar_defecto_pcb_actual(i)
                 )
             )
-
             btn_eliminar.grid(
                 row=0,
-                column=3,
-                padx=(4, 10)
+                column=1,
+                padx=(4, 10),
+                pady=6
             )
 
-            self.filas_defectos_pcb[defecto] = (
-                frame_fila
-            )
-
-    def restar_defecto_pcb(self, defecto):
-        """
-        Resta una unidad al defecto indicado.
-        """
-
-        if defecto not in self.defectos_pcb_actual:
-            return
-
-        nueva_cantidad = (
-            self.defectos_pcb_actual[defecto] - 1
-        )
-
-        if nueva_cantidad <= 0:
-            self.defectos_pcb_actual.pop(
-                defecto,
-                None
-            )
-        else:
-            self.defectos_pcb_actual[defecto] = (
-                nueva_cantidad
-            )
-
-        self.actualizar_lista_defectos_pcb()
-
-    def eliminar_defecto_pcb(self, defecto):
-        """
-        Elimina completamente un defecto de la PCB actual.
-        """
-
-        self.defectos_pcb_actual.pop(
-            defecto,
-            None
-        )
-
-        self.actualizar_lista_defectos_pcb()
+            self.filas_defectos_pcb[indice] = frame_fila
 
     def guardar_defectos_pcb_actual(self):
         """
-        Guarda en memoria los defectos de la PCB actual.
+        Guarda en memoria los defectos y posiciones de la PCB actual.
         """
+        self.ocultar_teclado_virtual()
 
         if not self.defectos_pcb_actual:
             messagebox.showwarning(
@@ -3373,18 +3417,15 @@ class RegistroDefectosSMT:
             self.indice_pcb_defecto_actual
         ]
 
-        datos_pcb = self.panel_actual[
-            "pcb_defectuosas"
-        ][posicion]
+        datos_pcb = self.panel_actual["pcb_defectuosas"][posicion]
 
-        datos_pcb["defectos"] = dict(
+        datos_pcb["defectos"] = [
+            registro.copy()
+            for registro in self.defectos_pcb_actual
+        ]
+        datos_pcb["cantidad_defectos"] = len(
             self.defectos_pcb_actual
         )
-
-        datos_pcb["cantidad_defectos"] = sum(
-            self.defectos_pcb_actual.values()
-        )
-
         datos_pcb["estado"] = "COMPLETADA"
 
         if posicion in self.botones_pcb:
@@ -3506,6 +3547,7 @@ class RegistroDefectosSMT:
         """
         Cierra la ventana de registro de defectos.
         """
+        self.ocultar_teclado_virtual()
 
         if (
             self.ventana_registro_defectos is not None
@@ -3563,6 +3605,7 @@ class RegistroDefectosSMT:
             "Resultado",
             "Defectos",
             "DescripcionOtro",
+            "DetalleDefectos",
             "Fecha/Hora"
         ]
 
@@ -3633,6 +3676,7 @@ class RegistroDefectosSMT:
             "Resultado",
             "Defectos",
             "DescripcionOtro",
+            "DetalleDefectos",
             "Fecha/Hora"
         ]
 
@@ -3644,7 +3688,11 @@ class RegistroDefectosSMT:
 
         defectos_finales = defectos_actuales.copy()
 
-        for defecto in self.lista_defectos:
+        defectos_requeridos = list(self.lista_defectos)
+        if self.opcion_otro not in defectos_requeridos:
+            defectos_requeridos.append(self.opcion_otro)
+
+        for defecto in defectos_requeridos:
             if defecto not in defectos_finales:
                 defectos_finales.append(defecto)
 
@@ -3704,116 +3752,76 @@ class RegistroDefectosSMT:
     def construir_filas_panel_actual(self):
         """
         Crea una fila por cada posición del panel.
+
+        Las columnas numéricas conservan el conteo para el Pareto y
+        DetalleDefectos guarda el defecto junto con la posición física.
         """
 
         if not self.panel_actual:
             return []
 
         filas = []
-
         fecha_hora = datetime.now().strftime(
             "%d/%m/%Y %H:%M:%S"
         )
-
-        pcb_defectuosas = self.panel_actual[
-            "pcb_defectuosas"
-        ]
+        pcb_defectuosas = self.panel_actual["pcb_defectuosas"]
 
         for posicion in range(
             1,
             self.panel_actual["total_pcb"] + 1
         ):
-            renglon, columna = (
-                self.obtener_coordenadas_posicion(
-                    posicion
-                )
+            renglon, columna = self.obtener_coordenadas_posicion(
+                posicion
             )
 
-            columnas_defectos = list(
-                self.lista_defectos
-            )
-
+            columnas_defectos = list(self.lista_defectos)
             if self.opcion_otro not in columnas_defectos:
-                columnas_defectos.append(
-                    self.opcion_otro
-                )
+                columnas_defectos.append(self.opcion_otro)
 
             cantidades_defectos = {
                 defecto: 0
                 for defecto in columnas_defectos
             }
-
-            descripciones_otro = []
+            descripcion_otro = ""
+            detalle_defectos = ""
 
             if posicion in pcb_defectuosas:
-                datos_pcb = pcb_defectuosas[
-                    posicion
-                ]
-
+                datos_pcb = pcb_defectuosas[posicion]
                 resultado = "FAIL"
                 id_pcb = datos_pcb["id_pcb"]
-
-                defectos_pcb = datos_pcb.get(
-                    "defectos",
-                    {}
+                defectos_pcb = list(
+                    datos_pcb.get("defectos", [])
                 )
 
-                for defecto, cantidad in defectos_pcb.items():
-
-                    if defecto.startswith("Otro: "):
-                        descripcion = defecto[
-                            len("Otro: "):
-                        ].strip()
-
-                        cantidades_defectos[
-                            self.opcion_otro
-                        ] += cantidad
-
-                        descripciones_otro.append(
-                            f"{descripcion} ({cantidad})"
-                        )
-
-                    else:
-                        cantidades_defectos[
-                            defecto
-                        ] = cantidad
-
-                total_defectos = sum(
-                    defectos_pcb.values()
+                procesado = self.procesar_defectos_pcb_para_guardar(
+                    defectos_pcb
                 )
-
+                cantidades_defectos.update(
+                    procesado["cantidades"]
+                )
+                total_defectos = procesado["total"]
+                detalle_defectos = procesado["detalle_defectos"]
+                descripcion_otro = procesado["descripcion_otro"]
             else:
                 resultado = "PASS"
                 id_pcb = ""
                 total_defectos = 0
-                descripciones_otro = []
 
             fila = {
-                "Sesion": self.panel_actual[
-                    "sesion"
-                ],
-                "Modelo": self.panel_actual[
-                    "modelo"
-                ],
-                "NumeroParte": self.panel_actual[
-                    "numero_parte"
-                ],
+                "Sesion": self.panel_actual["sesion"],
+                "Modelo": self.panel_actual["modelo"],
+                "NumeroParte": self.panel_actual["numero_parte"],
                 "Posicion": f"PCB {posicion}",
                 "Renglon": renglon,
                 "Columna": columna,
                 "ID_PCB": id_pcb,
                 "Resultado": resultado,
                 "Defectos": total_defectos,
-                "DescripcionOtro": " | ".join(
-                    descripciones_otro
-                ),
+                "DescripcionOtro": descripcion_otro,
+                "DetalleDefectos": detalle_defectos,
                 "Fecha/Hora": fecha_hora
             }
-
-            fila.update(
-                cantidades_defectos
-            )
-
+            fila.update(cantidades_defectos)
             filas.append(fila)
 
         return filas
@@ -3884,6 +3892,7 @@ class RegistroDefectosSMT:
 
                 escritor.writerows(filas)
 
+            self.invalidar_cache_log()
             return True
 
         except PermissionError:
@@ -4311,6 +4320,24 @@ class RegistroDefectosSMT:
         # ACTUALIZAR
         # -----------------------------------------------------
 
+        self.btn_ver_detalle_defectos = ctk.CTkButton(
+            self.frame_filtros_analisis,
+            text="Defectos",
+            width=110,
+            height=32,
+            font=("Arial", 13, "bold"),
+            fg_color="#6C3EB8",
+            hover_color="#4F2D87",
+            command=self.abrir_detalle_defectos_analisis
+        )
+
+        self.btn_ver_detalle_defectos.grid(
+            row=0,
+            column=9,
+            padx=(5, 8),
+            pady=12
+        )
+
         self.btn_actualizar_analisis = ctk.CTkButton(
             self.frame_filtros_analisis,
             text="Actualizar",
@@ -4322,7 +4349,7 @@ class RegistroDefectosSMT:
 
         self.btn_actualizar_analisis.grid(
             row=0,
-            column=9,
+            column=10,
             padx=(5, 15),
             pady=12
         )
@@ -4440,49 +4467,27 @@ class RegistroDefectosSMT:
 
         return horarios
 
-    def obtener_datos_analisis_defectos(self,fecha_seleccionada,hora_inicio,hora_final,modelo_seleccionado):
+    def obtener_datos_analisis_defectos(
+        self,
+        fecha_seleccionada,
+        hora_inicio,
+        hora_final,
+        modelo_seleccionado
+    ):
         """
-        Lee LogFilePCB.csv y filtra los registros por:
-
-        - Fecha
-        - Hora inicial
-        - Hora final
-        - Modelo
+        Filtra el caché de LogFilePCB.csv por fecha, horario y modelo.
         """
+        df = self.cargar_dataframe_log_cache()
 
-        import os
-        import pandas as pd
-
-        if not os.path.exists(self.archivo_log_pcb):
+        if df.empty or "Fecha/Hora" not in df.columns:
             return pd.DataFrame()
 
-        try:
-            df = pd.read_csv(
-                self.archivo_log_pcb,
-                encoding="utf-8-sig"
+        if "FechaHoraConvertida" not in df.columns:
+            df["FechaHoraConvertida"] = pd.to_datetime(
+                df["Fecha/Hora"],
+                dayfirst=True,
+                errors="coerce"
             )
-
-        except Exception as error:
-            messagebox.showerror(
-                "Error",
-                (
-                    "No fue posible leer LogFilePCB.csv.\n\n"
-                    f"{error}"
-                ),
-                parent=self.ventana_analisis_defectos
-            )
-
-            return pd.DataFrame()
-
-        if "Fecha/Hora" not in df.columns:
-            return pd.DataFrame()
-
-        # Convierte tanto fecha como hora.
-        df["FechaHoraConvertida"] = pd.to_datetime(
-            df["Fecha/Hora"],
-            dayfirst=True,
-            errors="coerce"
-        )
 
         df = df.dropna(
             subset=["FechaHoraConvertida"]
@@ -4493,19 +4498,16 @@ class RegistroDefectosSMT:
                 f"{fecha_seleccionada} {hora_inicio}",
                 format="%d/%m/%Y %H:%M"
             )
-
             fecha_final = pd.to_datetime(
                 f"{fecha_seleccionada} {hora_final}",
                 format="%d/%m/%Y %H:%M"
             )
-
         except ValueError:
             messagebox.showwarning(
                 "Filtro incorrecto",
                 "La fecha o el horario seleccionado no es válido.",
                 parent=self.ventana_analisis_defectos
             )
-
             return pd.DataFrame()
 
         if fecha_inicio > fecha_final:
@@ -4517,27 +4519,23 @@ class RegistroDefectosSMT:
                 ),
                 parent=self.ventana_analisis_defectos
             )
-
             return pd.DataFrame()
 
-        df = df[
-            (
-                df["FechaHoraConvertida"]
-                >= fecha_inicio
-            )
-            & (
-                df["FechaHoraConvertida"]
-                <= fecha_final
-            )
-        ].copy()
+        mascara = (
+            (df["FechaHoraConvertida"] >= fecha_inicio)
+            & (df["FechaHoraConvertida"] <= fecha_final)
+        )
 
         if modelo_seleccionado != "Todos los modelos":
-            df = df[
-                df["Modelo"].astype(str).str.strip()
+            mascara &= (
+                df["Modelo"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
                 == modelo_seleccionado
-            ].copy()
+            )
 
-        return df
+        return df.loc[mascara].copy()
 
     def obtener_columnas_defectos_analisis(self, df):
         """
@@ -4604,9 +4602,9 @@ class RegistroDefectosSMT:
         Actualiza el análisis completo de defectos.
         """
 
-        #import pandas as pd
-        #from matplotlib.figure import Figure
-        #from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg)
+        # import pandas as pd
+        # from matplotlib.figure import Figure
+        # from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg)
 
         fecha = (
             self.selector_fecha_analisis
@@ -4632,7 +4630,16 @@ class RegistroDefectosSMT:
             .strip()
         )
 
-        # Limpiar dashboard anterior
+        # Liberar la figura anterior antes de reconstruir el dashboard.
+        if self.figura_analisis_defectos is not None:
+            try:
+                plt.close(self.figura_analisis_defectos)
+            except Exception:
+                pass
+            self.figura_analisis_defectos = None
+            self.canvas_analisis_defectos = None
+
+        # Limpiar dashboard anterior.
         for widget in (
             self.frame_dashboard_analisis
             .winfo_children()
@@ -4905,7 +4912,7 @@ class RegistroDefectosSMT:
             master=self.frame_dashboard_analisis
         )
 
-        canvas.draw()
+        canvas.draw_idle()
 
         canvas.get_tk_widget().grid(
             row=1,
@@ -4915,6 +4922,7 @@ class RegistroDefectosSMT:
             sticky="nsew"
         )
 
+        self.figura_analisis_defectos = figura
         self.canvas_analisis_defectos = canvas
 
     def cerrar_ventana_analisis_defectos(self):
@@ -4925,6 +4933,14 @@ class RegistroDefectosSMT:
         ):
             self.ventana_analisis_defectos.destroy()
 
+        if self.figura_analisis_defectos is not None:
+            try:
+                plt.close(self.figura_analisis_defectos)
+            except Exception:
+                pass
+
+        self.figura_analisis_defectos = None
+        self.canvas_analisis_defectos = None
         self.ventana_analisis_defectos = None
 
     def calcular_detalle_otros_defectos(self, df):
@@ -5008,6 +5024,1479 @@ class RegistroDefectosSMT:
                 }
                 for defecto, cantidad in resultados.items()
             ]
+        )
+
+    def procesar_defectos_pcb_para_guardar(self, registros_defectos):
+        """
+        Convierte la lista de defectos en:
+
+        - cantidades para las columnas del Pareto;
+        - descripción detallada;
+        - detalle de la categoría Otro.
+        """
+
+        cantidades = {
+            defecto: 0
+            for defecto in self.lista_defectos
+        }
+
+        cantidades[self.opcion_otro] = 0
+
+        detalles_agrupados = {}
+        descripciones_otro = []
+
+        for registro in registros_defectos:
+
+            defecto = registro.get(
+                "defecto",
+                ""
+            ).strip()
+
+            posicion = registro.get(
+                "posicion",
+                ""
+            ).strip()
+
+            descripcion = registro.get(
+                "descripcion",
+                ""
+            ).strip()
+
+            if defecto == self.opcion_otro:
+                cantidades[self.opcion_otro] += 1
+
+                nombre_detalle = (
+                    f"Otro - {descripcion}"
+                )
+
+                descripciones_otro.append(
+                    f"{descripcion}: {posicion}"
+                )
+
+            else:
+                cantidades[defecto] = (
+                    cantidades.get(defecto, 0) + 1
+                )
+
+                nombre_detalle = defecto
+
+            if nombre_detalle not in detalles_agrupados:
+                detalles_agrupados[
+                    nombre_detalle
+                ] = []
+
+            detalles_agrupados[
+                nombre_detalle
+            ].append(posicion)
+
+        detalles = []
+
+        for defecto, posiciones in (
+                detalles_agrupados.items()
+        ):
+            detalles.append(
+                f"{defecto}: {', '.join(posiciones)}"
+            )
+
+        return {
+            "cantidades": cantidades,
+            "detalle_defectos": " | ".join(detalles),
+            "descripcion_otro": " | ".join(
+                descripciones_otro
+            ),
+            "total": len(registros_defectos)
+        }
+
+    def abrir_detalle_defectos_analisis(self):
+        """
+        Abre un dashboard rápido con una subgráfica por defecto.
+
+        Utiliza una sola Figure y un solo FigureCanvasTkAgg para
+        reducir considerablemente el consumo de memoria y los bloqueos.
+        """
+        from math import ceil
+
+        fecha = self.selector_fecha_analisis.get().strip()
+        hora_inicio = self.hora_inicio_analisis.get().strip()
+        hora_final = self.hora_final_analisis.get().strip()
+        modelo = self.modelo_analisis_defectos.get().strip()
+
+        df = self.obtener_datos_analisis_defectos(
+            fecha,
+            hora_inicio,
+            hora_final,
+            modelo
+        )
+
+        if df.empty:
+            messagebox.showinfo(
+                "Análisis de posiciones",
+                "No existen registros para los filtros seleccionados.",
+                parent=self.ventana_analisis_defectos
+            )
+            return
+
+        defectos_agrupados = self.obtener_defectos_por_posicion(df)
+
+        if not defectos_agrupados:
+            messagebox.showinfo(
+                "Análisis de posiciones",
+                (
+                    "No existen defectos con posiciones "
+                    "para los filtros seleccionados."
+                ),
+                parent=self.ventana_analisis_defectos
+            )
+            return
+
+        ventana = ctk.CTkToplevel(
+            self.ventana_analisis_defectos
+        )
+        ventana.title("Análisis de posiciones de defectos")
+        # ventana.geometry("1300x800")
+        # ventana.minsize(1000, 650)
+        ventana.after(120, lambda: ventana.state("zoomed"))
+        ventana.transient(self.ventana_analisis_defectos)
+        ventana.grid_columnconfigure(0, weight=1)
+        ventana.grid_rowconfigure(1, weight=1)
+
+        frame_encabezado = ctk.CTkFrame(
+            ventana,
+            corner_radius=10,
+            fg_color="#252842"
+        )
+        frame_encabezado.grid(
+            row=0,
+            column=0,
+            padx=15,
+            pady=(15, 8),
+            sticky="ew"
+        )
+
+        titulo_modelo = (
+            modelo
+            if modelo != "Todos los modelos"
+            else "Todos los modelos"
+        )
+
+        ctk.CTkLabel(
+            frame_encabezado,
+            text="ANÁLISIS DE POSICIONES DE DEFECTOS",
+            font=("Arial", 22, "bold"),
+            text_color="#FFFFFF"
+        ).pack(pady=(12, 2))
+
+        ctk.CTkLabel(
+            frame_encabezado,
+            text=(
+                f"{titulo_modelo}  |  {fecha}  |  "
+                f"{hora_inicio} - {hora_final}"
+            ),
+            font=("Arial", 14, "bold"),
+            text_color="#AEB4D0"
+        ).pack(pady=(0, 12))
+
+        frame_graficas = ctk.CTkScrollableFrame(
+            ventana,
+            corner_radius=10,
+            fg_color="#1F2238",
+            orientation="vertical"
+        )
+        frame_graficas.grid(
+            row=1,
+            column=0,
+            padx=15,
+            pady=(8, 15),
+            sticky="nsew"
+        )
+        frame_graficas.grid_columnconfigure(0, weight=1)
+
+        defectos_ordenados = sorted(
+            defectos_agrupados.items(),
+            key=lambda elemento: sum(elemento[1].values()),
+            reverse=True
+        )
+
+        cantidad_defectos = len(defectos_ordenados)
+        columnas_graficas = 2
+        renglones_graficas = ceil(
+            cantidad_defectos / columnas_graficas
+        )
+
+        alto_figura = max(
+            5.0,
+            renglones_graficas * 2.8
+        )
+
+        figura = Figure(
+            figsize=(14, alto_figura),
+            dpi=82,
+            facecolor="#1F2238",
+            constrained_layout=True
+        )
+
+        ejes = figura.subplots(
+            nrows=renglones_graficas,
+            ncols=columnas_graficas,
+            squeeze=False
+        )
+
+        for indice, (
+            nombre_defecto,
+            posiciones
+        ) in enumerate(defectos_ordenados):
+            renglon = indice // columnas_graficas
+            columna = indice % columnas_graficas
+            eje = ejes[renglon][columna]
+
+            total_defecto = sum(posiciones.values())
+
+            posiciones_ordenadas = sorted(
+                posiciones.items(),
+                key=lambda elemento: elemento[1]
+            )
+
+            etiquetas = [
+                posicion
+                for posicion, _ in posiciones_ordenadas
+            ]
+            cantidades = [
+                cantidad
+                for _, cantidad in posiciones_ordenadas
+            ]
+
+            eje.set_facecolor("#252842")
+
+            barras = eje.barh(
+                etiquetas,
+                cantidades,
+                color="#2ECC71",
+                height=0.65
+            )
+
+            cantidad_maxima = max(cantidades, default=1)
+            margen = max(cantidad_maxima * 0.18, 0.5)
+            eje.set_xlim(0, cantidad_maxima + margen)
+
+            eje.set_title(
+                (
+                    f"{nombre_defecto.upper()}\n"
+                    f"Total de ocurrencias: {total_defecto}"
+                ),
+                fontsize=11,
+                fontweight="bold",
+                color="#DDE2FF",
+                pad=8
+            )
+
+            eje.set_xlabel(
+                "Frecuencia",
+                color="#D8DCF5",
+                fontsize=9
+            )
+            eje.tick_params(
+                axis="x",
+                colors="#D8DCF5",
+                labelsize=8
+            )
+            eje.tick_params(
+                axis="y",
+                colors="#D8DCF5",
+                labelsize=9
+            )
+            eje.grid(
+                axis="x",
+                linestyle="--",
+                alpha=0.20
+            )
+            eje.set_axisbelow(True)
+
+            eje.spines["top"].set_visible(False)
+            eje.spines["right"].set_visible(False)
+            eje.spines["bottom"].set_color("#6F7390")
+            eje.spines["left"].set_color("#6F7390")
+
+            for barra, cantidad in zip(barras, cantidades):
+                eje.text(
+                    barra.get_width() + cantidad_maxima * 0.02,
+                    barra.get_y() + barra.get_height() / 2,
+                    str(cantidad),
+                    va="center",
+                    fontsize=9,
+                    fontweight="bold",
+                    color="#FFFFFF"
+                )
+
+        total_espacios = (
+            renglones_graficas * columnas_graficas
+        )
+
+        for indice_vacio in range(
+            cantidad_defectos,
+            total_espacios
+        ):
+            renglon = indice_vacio // columnas_graficas
+            columna = indice_vacio % columnas_graficas
+            ejes[renglon][columna].set_visible(False)
+
+        canvas = FigureCanvasTkAgg(
+            figura,
+            master=frame_graficas
+        )
+        canvas.get_tk_widget().grid(
+            row=0,
+            column=0,
+            padx=8,
+            pady=8,
+            sticky="nsew"
+        )
+
+        # HeatMap debajo
+        frame_heatmap = ctk.CTkFrame(
+            frame_graficas,
+            fg_color="transparent"
+        )
+
+        frame_heatmap.grid(
+            row=1,
+            column=0,
+            padx=5,
+            pady=(15, 10),
+            sticky="ew"
+        )
+
+        frame_heatmap.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        self.crear_heatmap_panel(
+            frame_heatmap,
+            df,
+            modelo
+        )
+
+        # Mostrar primero la ventana y dibujar después.
+        ventana.after(100, canvas.draw_idle)
+        # ventana.after(120, lambda: ventana.state("zoomed"))
+
+        ventana.figura_defectos_posicion = figura
+        ventana.canvas_defectos_posicion = canvas
+
+        def cerrar_ventana_posiciones():
+            try:
+                plt.close(figura)
+            except Exception:
+                pass
+            ventana.destroy()
+
+        ventana.protocol(
+            "WM_DELETE_WINDOW",
+            cerrar_ventana_posiciones
+        )
+
+    def construir_texto_registro_defecto(self, registro):
+        defecto = registro.get("defecto", "")
+        posicion = registro.get("posicion", "")
+        descripcion = registro.get("descripcion", "")
+
+        if defecto == self.opcion_otro:
+            return (
+                f"Otro - {descripcion}: {posicion}"
+            )
+
+        return f"{defecto}: {posicion}"
+
+    def eliminar_defecto_pcb_actual(self, indice):
+        if 0 <= indice < len(self.defectos_pcb_actual):
+            self.defectos_pcb_actual.pop(indice)
+            self.actualizar_lista_defectos_pcb()
+
+    def obtener_defectos_por_posicion(self, df):
+        """
+        Agrupa las posiciones encontradas para cada defecto.
+
+        Ejemplo de DetalleDefectos:
+        Efecto lapida: C10, C12 | Cortos: R2
+
+        Resultado:
+        {
+            "Efecto lapida": {
+                "C10": 1,
+                "C12": 1
+            },
+            "Cortos": {
+                "R2": 1
+            }
+        }
+        """
+
+        defectos_agrupados = {}
+
+        if (
+                df.empty
+                or "DetalleDefectos" not in df.columns
+        ):
+            return defectos_agrupados
+
+        for detalle_completo in (
+                df["DetalleDefectos"]
+            .fillna("")
+            .astype(str)
+        ):
+            detalle_completo = detalle_completo.strip()
+
+            if (
+                    not detalle_completo
+                    or detalle_completo.lower() == "nan"
+            ):
+                continue
+
+            # Cada grupo está separado mediante |
+            grupos = detalle_completo.split("|")
+
+            for grupo in grupos:
+                grupo = grupo.strip()
+
+                if not grupo or ":" not in grupo:
+                    continue
+
+                # Separa desde el último ":"
+                # para soportar nombres que contengan dos puntos.
+                nombre_defecto, posiciones_texto = (
+                    grupo.rsplit(":", 1)
+                )
+
+                nombre_defecto = nombre_defecto.strip()
+                posiciones_texto = posiciones_texto.strip()
+
+                if (
+                        not nombre_defecto
+                        or not posiciones_texto
+                ):
+                    continue
+
+                posiciones = posiciones_texto.split(",")
+
+                if nombre_defecto not in defectos_agrupados:
+                    defectos_agrupados[nombre_defecto] = {}
+
+                for posicion in posiciones:
+                    posicion = posicion.strip().upper()
+
+                    if not posicion:
+                        continue
+
+                    cantidad_actual = (
+                        defectos_agrupados[
+                            nombre_defecto
+                        ].get(posicion, 0)
+                    )
+
+                    defectos_agrupados[
+                        nombre_defecto
+                    ][posicion] = cantidad_actual + 1
+
+        return defectos_agrupados
+
+    def obtener_datos_heatmap_pcb(self, df):
+        """
+        Agrupa los defectos por posición física del panel.
+
+        Resultado aproximado:
+        {
+            1: {
+                "total_defectos": 5,
+                "pcb_fail": 3,
+                "ids": [...],
+                "defectos": {
+                    "Efecto lapida": {
+                        "cantidad": 3,
+                        "posiciones": {
+                            "C10": 2,
+                            "R5": 1
+                        }
+                    }
+                }
+            }
+        }
+        """
+
+        datos_heatmap = {}
+
+        if df.empty or "Posicion" not in df.columns:
+            return datos_heatmap
+
+        for _, fila in df.iterrows():
+
+            posicion_texto = str(
+                fila.get("Posicion", "")
+            ).strip()
+
+            # Acepta:
+            # PCB 1
+            # PCB1
+            # 1
+            numeros = "".join(
+                caracter
+                for caracter in posicion_texto
+                if caracter.isdigit()
+            )
+
+            if not numeros:
+                continue
+
+            numero_pcb = int(numeros)
+
+            if numero_pcb not in datos_heatmap:
+                datos_heatmap[numero_pcb] = {
+                    "total_defectos": 0,
+                    "pcb_fail": 0,
+                    "ids": [],
+                    "sesiones": set(),
+                    "defectos": {}
+                }
+
+            datos_pcb = datos_heatmap[numero_pcb]
+
+            resultado = str(
+                fila.get("Resultado", "")
+            ).strip().upper()
+
+            if resultado != "FAIL":
+                continue
+
+            datos_pcb["pcb_fail"] += 1
+
+            identificador = str(
+                fila.get("ID_PCB", "")
+            ).strip()
+
+            if (
+                identificador
+                and identificador.lower() != "nan"
+                and identificador not in datos_pcb["ids"]
+            ):
+                datos_pcb["ids"].append(
+                    identificador
+                )
+
+            sesion = str(
+                fila.get("Sesion", "")
+            ).strip()
+
+            if sesion and sesion.lower() != "nan":
+                datos_pcb["sesiones"].add(
+                    sesion
+                )
+
+            detalle = str(
+                fila.get("DetalleDefectos", "")
+            ).strip()
+
+            if (
+                not detalle
+                or detalle.lower() == "nan"
+            ):
+                continue
+
+            grupos = detalle.split("|")
+
+            for grupo in grupos:
+
+                grupo = grupo.strip()
+
+                if not grupo or ":" not in grupo:
+                    continue
+
+                nombre_defecto, posiciones_texto = (
+                    grupo.rsplit(":", 1)
+                )
+
+                nombre_defecto = (
+                    nombre_defecto.strip()
+                )
+
+                posiciones_componentes = [
+                    posicion.strip().upper()
+                    for posicion
+                    in posiciones_texto.split(",")
+                    if posicion.strip()
+                ]
+
+                if not nombre_defecto:
+                    continue
+
+                if nombre_defecto not in datos_pcb["defectos"]:
+                    datos_pcb["defectos"][nombre_defecto] = {
+                        "cantidad": 0,
+                        "posiciones": {}
+                    }
+
+                datos_defecto = datos_pcb[
+                    "defectos"
+                ][nombre_defecto]
+
+                for posicion_componente in posiciones_componentes:
+
+                    datos_defecto["cantidad"] += 1
+                    datos_pcb["total_defectos"] += 1
+
+                    datos_defecto["posiciones"][
+                        posicion_componente
+                    ] = (
+                        datos_defecto["posiciones"].get(
+                            posicion_componente,
+                            0
+                        )
+                        + 1
+                    )
+
+        return datos_heatmap
+
+    @staticmethod
+    def obtener_color_heatmap_pcb(
+        cantidad,
+        cantidad_maxima
+    ):
+        """
+        Retorna el color de una PCB según su número de defectos.
+        """
+
+        if cantidad <= 0:
+            return "#3A3F5C", "#4A506F"
+
+        if cantidad_maxima <= 0:
+            cantidad_maxima = 1
+
+        porcentaje = cantidad / cantidad_maxima
+
+        if porcentaje <= 0.25:
+            return "#2E8B57", "#246B45"
+
+        if porcentaje <= 0.50:
+            return "#C9A227", "#A68420"
+
+        if porcentaje <= 0.75:
+            return "#D97706", "#B45309"
+
+        return "#C24155", "#9F3345"
+
+    def crear_heatmap_panel(
+        self,
+        contenedor,
+        df,
+        modelo
+    ):
+        """
+        Crea el mapa de calor interactivo del panel.
+        """
+
+        # El mapa necesita conocer la geometría exacta.
+        if modelo == "Todos los modelos":
+
+            frame_aviso = ctk.CTkFrame(
+                contenedor,
+                corner_radius=12,
+                fg_color="#252842",
+                border_width=1,
+                border_color="#454B70"
+            )
+
+            frame_aviso.grid(
+                row=0,
+                column=0,
+                padx=10,
+                pady=10,
+                sticky="ew"
+            )
+
+            ctk.CTkLabel(
+                frame_aviso,
+                text="MAPA DE CALOR DEL PANEL",
+                font=("Arial", 18, "bold"),
+                text_color="#DDE2FF"
+            ).pack(
+                pady=(15, 5)
+            )
+
+            ctk.CTkLabel(
+                frame_aviso,
+                text=(
+                    "Seleccione un modelo específico para mostrar "
+                    "la distribución física de sus PCB."
+                ),
+                font=("Arial", 14),
+                text_color="#AEB4D0"
+            ).pack(
+                pady=(0, 15)
+            )
+
+            return
+
+        configuracion = self.configuracion_modelos.get(
+            modelo
+        )
+
+        if not configuracion:
+            return
+
+        renglones = configuracion["renglones"]
+        columnas = configuracion["columnas"]
+        total_pcb = configuracion["total_pcb"]
+
+        self.datos_heatmap_pcb = (
+            self.obtener_datos_heatmap_pcb(df)
+        )
+
+        cantidad_maxima = max(
+            (
+                datos["total_defectos"]
+                for datos
+                in self.datos_heatmap_pcb.values()
+            ),
+            default=0
+        )
+
+        # =====================================================
+        # TARJETA PRINCIPAL
+        # =====================================================
+
+        tarjeta_heatmap = ctk.CTkFrame(
+            contenedor,
+            corner_radius=12,
+            fg_color="#252842",
+            border_width=1,
+            border_color="#454B70"
+        )
+
+        tarjeta_heatmap.grid(
+            row=0,
+            column=0,
+            padx=10,
+            pady=10,
+            sticky="nsew"
+        )
+
+        tarjeta_heatmap.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        ctk.CTkLabel(
+            tarjeta_heatmap,
+            text="MAPA DE CALOR DEL PANEL",
+            font=("Arial", 20, "bold"),
+            text_color="#DDE2FF"
+        ).grid(
+            row=0,
+            column=0,
+            padx=15,
+            pady=(15, 2)
+        )
+
+        ctk.CTkLabel(
+            tarjeta_heatmap,
+            text=(
+                f"{modelo}  |  "
+                f"Configuración: {renglones} × {columnas}  |  "
+                f"Total PCB: {total_pcb}"
+            ),
+            font=("Arial", 14, "bold"),
+            text_color="#AEB4D0"
+        ).grid(
+            row=1,
+            column=0,
+            padx=15,
+            pady=(0, 4)
+        )
+
+        ctk.CTkLabel(
+            tarjeta_heatmap,
+            text=(
+                "Presione una PCB para consultar sus defectos, "
+                "componentes e identificadores."
+            ),
+            font=("Arial", 13),
+            text_color="#79C2FF"
+        ).grid(
+            row=2,
+            column=0,
+            padx=15,
+            pady=(0, 10)
+        )
+
+        # =====================================================
+        # CUADRÍCULA DEL PANEL
+        # =====================================================
+
+        frame_panel = ctk.CTkFrame(
+            tarjeta_heatmap,
+            fg_color="#1F2238",
+            corner_radius=12
+        )
+
+        frame_panel.grid(
+            row=3,
+            column=0,
+            padx=20,
+            pady=10
+        )
+
+        for columna in range(columnas):
+            frame_panel.grid_columnconfigure(
+                columna,
+                weight=1,
+                uniform="heatmap_pcb"
+            )
+
+        numero_pcb = 1
+
+        for renglon in range(renglones):
+            for columna in range(columnas):
+
+                datos_pcb = self.datos_heatmap_pcb.get(
+                    numero_pcb,
+                    {}
+                )
+
+                cantidad = datos_pcb.get(
+                    "total_defectos",
+                    0
+                )
+
+                pcb_fail = datos_pcb.get(
+                    "pcb_fail",
+                    0
+                )
+
+                color, hover = (
+                    self.obtener_color_heatmap_pcb(
+                        cantidad,
+                        cantidad_maxima
+                    )
+                )
+
+                texto_boton = (
+                    f"PCB {numero_pcb}\n"
+                    f"{cantidad} defecto"
+                )
+
+                if cantidad != 1:
+                    texto_boton += "s"
+
+                if pcb_fail > 0:
+                    texto_boton += (
+                        f"\n{pcb_fail} FAIL"
+                    )
+
+                boton = ctk.CTkButton(
+                    frame_panel,
+                    text=texto_boton,
+                    width=145,
+                    height=82,
+                    corner_radius=10,
+                    font=("Arial", 14, "bold"),
+                    fg_color=color,
+                    hover_color=hover,
+                    command=lambda pcb=numero_pcb: (
+                        self.mostrar_detalle_pcb_heatmap(
+                            pcb,
+                            modelo
+                        )
+                    )
+                )
+
+                boton.grid(
+                    row=renglon,
+                    column=columna,
+                    padx=7,
+                    pady=7,
+                    sticky="nsew"
+                )
+
+                numero_pcb += 1
+
+        # =====================================================
+        # LEYENDA
+        # =====================================================
+
+        frame_leyenda = ctk.CTkFrame(
+            tarjeta_heatmap,
+            fg_color="transparent"
+        )
+
+        frame_leyenda.grid(
+            row=4,
+            column=0,
+            padx=20,
+            pady=(5, 15)
+        )
+
+        leyenda = [
+            ("Sin defectos", "#3A3F5C"),
+            ("Frecuencia baja", "#2E8B57"),
+            ("Frecuencia media", "#C9A227"),
+            ("Frecuencia alta", "#D97706"),
+            ("Posición crítica", "#C24155")
+        ]
+
+        for indice, (
+            texto,
+            color
+        ) in enumerate(leyenda):
+
+            indicador = ctk.CTkLabel(
+                frame_leyenda,
+                text=f"  {texto}  ",
+                height=27,
+                corner_radius=6,
+                fg_color=color,
+                font=("Arial", 11, "bold"),
+                text_color="#FFFFFF"
+            )
+
+            indicador.grid(
+                row=0,
+                column=indice,
+                padx=4
+            )
+
+    def mostrar_detalle_pcb_heatmap(
+        self,
+        numero_pcb,
+        modelo
+    ):
+        """
+        Muestra los defectos encontrados en una posición del panel.
+        """
+
+        datos_pcb = self.datos_heatmap_pcb.get(
+            numero_pcb,
+            {
+                "total_defectos": 0,
+                "pcb_fail": 0,
+                "ids": [],
+                "sesiones": set(),
+                "defectos": {}
+            }
+        )
+
+        ventana = ctk.CTkToplevel(
+            self.ventana_analisis_defectos
+        )
+
+        ventana.title(
+            f"Detalle PCB {numero_pcb}"
+        )
+
+        ventana.geometry("760x650")
+        ventana.minsize(650, 520)
+
+        ventana.after(
+            100,
+            lambda: (
+                ventana.lift(),
+                ventana.focus_force(),
+                ventana.attributes("-topmost", True),
+                ventana.after(
+                    300,
+                    lambda: ventana.attributes(
+                        "-topmost",
+                        False
+                    )
+                )
+            )
+        )
+
+        ventana.transient(
+            self.ventana_analisis_defectos
+        )
+
+        ventana.grab_set()
+
+        ventana.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        ventana.grid_rowconfigure(
+            2,
+            weight=1
+        )
+
+        def cerrar_detalle_pcb():
+            try:
+                ventana.grab_release()
+            except tk.TclError:
+                pass
+
+            ventana.destroy()
+
+        ventana.protocol(
+            "WM_DELETE_WINDOW",
+            cerrar_detalle_pcb
+        )
+
+        # =====================================================
+        # ENCABEZADO
+        # =====================================================
+
+        frame_encabezado = ctk.CTkFrame(
+            ventana,
+            corner_radius=12,
+            fg_color="#252842"
+        )
+
+        frame_encabezado.grid(
+            row=0,
+            column=0,
+            padx=15,
+            pady=(15, 8),
+            sticky="ew"
+        )
+
+        ctk.CTkLabel(
+            frame_encabezado,
+            text=f"PCB {numero_pcb}",
+            font=("Arial", 28, "bold"),
+            text_color="#FFFFFF"
+        ).pack(
+            pady=(14, 2)
+        )
+
+        ctk.CTkLabel(
+            frame_encabezado,
+            text=modelo,
+            font=("Arial", 15, "bold"),
+            text_color="#AEB4D0"
+        ).pack(
+            pady=(0, 5)
+        )
+
+        ctk.CTkLabel(
+            frame_encabezado,
+            text=(
+                f"Defectos registrados: "
+                f"{datos_pcb['total_defectos']}     |     "
+                f"PCB defectuosas: {datos_pcb['pcb_fail']}     |     "
+                f"Paneles afectados: {len(datos_pcb['sesiones'])}"
+            ),
+            font=("Arial", 14, "bold"),
+            text_color="#6FE3A1"
+        ).pack(
+            pady=(0, 14)
+        )
+
+        # =====================================================
+        # IDENTIFICADORES
+        # =====================================================
+
+        ids = datos_pcb.get(
+            "ids",
+            []
+        )
+
+        texto_ids = (
+            ", ".join(ids)
+            if ids
+            else "Sin identificadores defectuosos registrados"
+        )
+
+        frame_ids = ctk.CTkFrame(
+            ventana,
+            corner_radius=10,
+            fg_color="#292C47"
+        )
+
+        frame_ids.grid(
+            row=1,
+            column=0,
+            padx=15,
+            pady=8,
+            sticky="ew"
+        )
+
+        ctk.CTkLabel(
+            frame_ids,
+            text="ID DE PCB DEFECTUOSAS",
+            font=("Arial", 13, "bold"),
+            text_color="#79C2FF"
+        ).pack(
+            pady=(10, 3)
+        )
+
+        ctk.CTkLabel(
+            frame_ids,
+            text=texto_ids,
+            font=("Arial", 13),
+            text_color="#DDE2FF",
+            wraplength=690
+        ).pack(
+            padx=15,
+            pady=(0, 10)
+        )
+
+        # =====================================================
+        # LISTADO DE DEFECTOS
+        # =====================================================
+
+        frame_lista = ctk.CTkScrollableFrame(
+            ventana,
+            corner_radius=10,
+            fg_color="#1F2238",
+            label_text="Defectos y componentes encontrados",
+            label_font=("Arial", 14, "bold")
+        )
+
+        frame_lista.grid(
+            row=2,
+            column=0,
+            padx=15,
+            pady=(8, 15),
+            sticky="nsew"
+        )
+
+        frame_lista.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        defectos = datos_pcb.get(
+            "defectos",
+            {}
+        )
+
+        if not defectos:
+
+            ctk.CTkLabel(
+                frame_lista,
+                text=(
+                    "No existen defectos registrados "
+                    "para esta posición del panel."
+                ),
+                font=("Arial", 15),
+                text_color="#AEB4D0"
+            ).grid(
+                row=0,
+                column=0,
+                padx=15,
+                pady=30
+            )
+
+            return
+
+        defectos_ordenados = sorted(
+            defectos.items(),
+            key=lambda elemento: elemento[1]["cantidad"],
+            reverse=True
+        )
+
+        for indice, (
+            nombre_defecto,
+            informacion
+        ) in enumerate(defectos_ordenados):
+
+            tarjeta = ctk.CTkFrame(
+                frame_lista,
+                corner_radius=9,
+                fg_color="#30344F",
+                border_width=1,
+                border_color="#454B70"
+            )
+
+            tarjeta.grid(
+                row=indice,
+                column=0,
+                padx=8,
+                pady=6,
+                sticky="ew"
+            )
+
+            tarjeta.grid_columnconfigure(
+                0,
+                weight=1
+            )
+
+            ctk.CTkLabel(
+                tarjeta,
+                text=nombre_defecto,
+                font=("Arial", 15, "bold"),
+                text_color="#FFFFFF",
+                anchor="w"
+            ).grid(
+                row=0,
+                column=0,
+                padx=12,
+                pady=(10, 2),
+                sticky="ew"
+            )
+
+            ctk.CTkLabel(
+                tarjeta,
+                text=(
+                    f"{informacion['cantidad']} ocurrencia"
+                    + (
+                        ""
+                        if informacion["cantidad"] == 1
+                        else "s"
+                    )
+                ),
+                font=("Arial", 13, "bold"),
+                text_color="#6FE3A1"
+            ).grid(
+                row=0,
+                column=1,
+                padx=12,
+                pady=(10, 2)
+            )
+
+            posiciones_ordenadas = sorted(
+                informacion["posiciones"].items(),
+                key=lambda elemento: (
+                    -elemento[1],
+                    elemento[0]
+                )
+            )
+
+            texto_posiciones = "   |   ".join(
+                (
+                    f"{posicion}: {cantidad}"
+                    if cantidad > 1
+                    else posicion
+                )
+                for posicion, cantidad
+                in posiciones_ordenadas
+            )
+
+            ctk.CTkLabel(
+                tarjeta,
+                text=(
+                    f"Componentes: {texto_posiciones}"
+                ),
+                font=("Arial", 13),
+                text_color="#DDE2FF",
+                anchor="w",
+                justify="left",
+                wraplength=650
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                padx=12,
+                pady=(2, 10),
+                sticky="ew"
+            )
+
+    def mostrar_teclado_virtual(self, event=None):
+        """
+        Abre el teclado en pantalla clásico de Windows.
+        """
+
+        ruta_osk = r"C:\Windows\System32\osk.exe"
+
+        if not os.path.isfile(ruta_osk):
+            messagebox.showwarning(
+                "Teclado virtual",
+                f"No se encontró el teclado virtual:\n{ruta_osk}",
+                parent=self.ventana_registro_defectos
+            )
+            return
+
+        try:
+            # Evita intentar abrirlo si ya está ejecutándose.
+            resultado = subprocess.run(
+                [
+                    "tasklist",
+                    "/FI",
+                    "IMAGENAME eq osk.exe"
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+
+            if "osk.exe" in resultado.stdout.lower():
+                return
+
+            # Este método funciona sin solicitar elevación.
+            os.startfile(ruta_osk)
+
+        except OSError as error:
+            messagebox.showerror(
+                "Teclado virtual",
+                (
+                    "No fue posible abrir el teclado virtual.\n\n"
+                    f"{error}"
+                ),
+                parent=self.ventana_registro_defectos
+            )
+
+    def ocultar_teclado_virtual(self):
+        """
+        Cierra el teclado en pantalla de Windows.
+        """
+
+        try:
+            subprocess.run(
+                [
+                    "taskkill",
+                    "/F",
+                    "/IM",
+                    "osk.exe"
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+
+        except OSError:
+            pass
+
+    def buscar_y_posicionar_teclado(
+        self,
+        intentos_restantes=30
+    ):
+        """
+        Busca la ventana perteneciente al proceso OSK.
+        """
+
+        if (
+            self.proceso_teclado_virtual is None
+            or self.proceso_teclado_virtual.poll() is not None
+        ):
+            return
+
+        pid_objetivo = self.proceso_teclado_virtual.pid
+        usuario32 = ctypes.windll.user32
+
+        hwnd_encontrado = None
+
+        EnumWindowsProc = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HWND,
+            wintypes.LPARAM
+        )
+
+        def callback(hwnd, lparam):
+            nonlocal hwnd_encontrado
+
+            if not usuario32.IsWindowVisible(hwnd):
+                return True
+
+            pid_ventana = wintypes.DWORD()
+
+            usuario32.GetWindowThreadProcessId(
+                hwnd,
+                ctypes.byref(pid_ventana)
+            )
+
+            if pid_ventana.value == pid_objetivo:
+                hwnd_encontrado = hwnd
+                return False
+
+            return True
+
+        usuario32.EnumWindows(
+            EnumWindowsProc(callback),
+            0
+        )
+
+        if hwnd_encontrado:
+            self.hwnd_teclado_virtual = hwnd_encontrado
+
+            self.posicionar_teclado_inferior(
+                hwnd_encontrado
+            )
+            return
+
+        if intentos_restantes > 0:
+            self.after_teclado_virtual = self.root.after(
+                100,
+                lambda: self.buscar_y_posicionar_teclado(
+                    intentos_restantes - 1
+                )
+            )
+
+    def posicionar_teclado_inferior(self, hwnd):
+        """
+        Mueve OSK a la parte inferior de la pantalla principal.
+        """
+
+        if not hwnd:
+            return
+
+        usuario32 = ctypes.windll.user32
+
+        # Área útil de Windows, excluyendo la barra de tareas.
+        SPI_GETWORKAREA = 0x0030
+
+        area_trabajo = wintypes.RECT()
+
+        resultado = usuario32.SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            ctypes.byref(area_trabajo),
+            0
+        )
+
+        if not resultado:
+            ancho_pantalla = usuario32.GetSystemMetrics(0)
+            alto_pantalla = usuario32.GetSystemMetrics(1)
+
+            area_trabajo.left = 0
+            area_trabajo.top = 0
+            area_trabajo.right = ancho_pantalla
+            area_trabajo.bottom = alto_pantalla
+
+        ancho_disponible = (
+            area_trabajo.right
+            - area_trabajo.left
+        )
+
+        alto_disponible = (
+            area_trabajo.bottom
+            - area_trabajo.top
+        )
+
+        # Tamaño recomendado para pantalla touch.
+        ancho_teclado = min(
+            1050,
+            int(ancho_disponible * 0.75)
+        )
+
+        alto_teclado = min(
+            380,
+            int(alto_disponible * 0.38)
+        )
+
+        posicion_x = (
+            area_trabajo.left
+            + (
+                ancho_disponible
+                - ancho_teclado
+            ) // 2
+        )
+
+        posicion_y = (
+            area_trabajo.bottom
+            - alto_teclado
+        )
+
+        HWND_TOPMOST = -1
+
+        SWP_SHOWWINDOW = 0x0040
+        SWP_NOACTIVATE = 0x0010
+
+        usuario32.SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            posicion_x,
+            posicion_y,
+            ancho_teclado,
+            alto_teclado,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE
         )
 
 

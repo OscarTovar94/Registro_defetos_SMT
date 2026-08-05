@@ -43,7 +43,7 @@ echo.
 echo Iniciando PyInstaller...
 echo.
 
-python -m PyInstaller --collect-all babel --collect-all tkcalendar --onedir --noconsole --clean --icon="C:\Registro_defetos_SMT\Image\elrad.ico" --name "%APPNAME%" "main.py"
+pyinstaller --collect-all babel --collect-all tkcalendar --onedir --noconsole --clean --icon="C:\Registro_defetos_SMT\Image\elrad.ico" --name "%APPNAME%" "main.py"
 
 if errorlevel 1 (
     echo.

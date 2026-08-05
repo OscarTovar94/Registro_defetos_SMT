@@ -504,7 +504,7 @@ class RegistroDefectosSMT:
 
         self.lbl_by = ctk.CTkLabel(
             self.frame_pareto_global,
-            text="By: Oscar Tovar",
+            text="Rev: 2.0 (By: Oscar Tovar)",
             font=("Arial", 10),
             text_color="#AEB4D0"
         )
