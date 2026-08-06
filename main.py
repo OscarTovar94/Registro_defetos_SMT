@@ -92,6 +92,8 @@ class RegistroDefectosSMT:
         self.frame_dashboard_analisis = None
         self.ventana_detalle_pcb_heatmap = None
         self.datos_heatmap_pcb = {}
+        self.ventana_teclado_smt = None
+        self.entry_destino_teclado = None
 
         # Caché del archivo CSV para evitar leerlo varias veces.
         self._cache_df_log = None
@@ -227,7 +229,7 @@ class RegistroDefectosSMT:
             values=["Sin modelos"],
             height=32,
             corner_radius=8,
-            font=("Arial", 14),
+            font=("Arial", 16),
             dropdown_font=("Arial", 14),
             state="readonly",
             command=self.seleccionar_modelo
@@ -2967,6 +2969,12 @@ class RegistroDefectosSMT:
             padx=(10, 10),
             sticky="ew"
         )
+        self.entry_posicion_defecto_pcb.bind(
+            "<Button-1>",
+            lambda event: self.abrir_teclado_smt(
+                self.entry_posicion_defecto_pcb
+            )
+        )
 
         self.btn_agregar_defecto_pcb = ctk.CTkButton(
             frame_captura,
@@ -3278,6 +3286,7 @@ class RegistroDefectosSMT:
                 return
 
         self.defectos_pcb_actual.append(registro)
+        self.cerrar_teclado_smt()
 
         self.defecto_pcb_seleccionado.set(
             "Seleccione un defecto"
@@ -6261,6 +6270,284 @@ class RegistroDefectosSMT:
                 pady=(2, 10),
                 sticky="ew"
             )
+
+    def abrir_teclado_smt(self, entry_destino):
+        """
+        Abre un teclado virtual especializado para posiciones SMT.
+        """
+
+        self.entry_destino_teclado = entry_destino
+
+        if (
+                self.ventana_teclado_smt is not None
+                and self.ventana_teclado_smt.winfo_exists()
+        ):
+            self.ventana_teclado_smt.lift()
+            self.ventana_teclado_smt.focus_force()
+            return
+
+        self.ventana_teclado_smt = ctk.CTkToplevel(
+            self.ventana_registro_defectos
+        )
+
+        self.ventana_teclado_smt.title(
+            "Teclado de posición SMT"
+        )
+
+        self.ventana_teclado_smt.geometry("720x330")
+        self.ventana_teclado_smt.resizable(False, False)
+
+        self.ventana_teclado_smt.transient(
+            self.ventana_registro_defectos
+        )
+
+        self.ventana_teclado_smt.grab_set()
+
+        self.ventana_teclado_smt.protocol(
+            "WM_DELETE_WINDOW",
+            self.cerrar_teclado_smt
+        )
+
+        # Colocarlo abajo y centrado.
+        self.ventana_teclado_smt.update_idletasks()
+
+        ancho = 720
+        alto = 330
+
+        ancho_pantalla = (
+            self.ventana_teclado_smt.winfo_screenwidth()
+        )
+
+        alto_pantalla = (
+            self.ventana_teclado_smt.winfo_screenheight()
+        )
+
+        posicion_x = (
+                             ancho_pantalla - ancho
+                     ) // 2
+
+        posicion_y = (
+                alto_pantalla - alto - 50
+        )
+
+        self.ventana_teclado_smt.geometry(
+            f"{ancho}x{alto}+{posicion_x}+{posicion_y}"
+        )
+
+        frame_principal = ctk.CTkFrame(
+            self.ventana_teclado_smt,
+            corner_radius=12
+        )
+
+        frame_principal.pack(
+            fill="both",
+            expand=True,
+            padx=12,
+            pady=12
+        )
+
+        self.lbl_teclado_valor = ctk.CTkLabel(
+            frame_principal,
+            text=self.entry_destino_teclado.get(),
+            height=45,
+            corner_radius=8,
+            fg_color="#1F2238",
+            font=("Arial", 22, "bold"),
+            anchor="center"
+        )
+
+        self.lbl_teclado_valor.pack(
+            fill="x",
+            padx=10,
+            pady=(10, 12)
+        )
+
+        frame_teclas = ctk.CTkFrame(
+            frame_principal,
+            fg_color="transparent"
+        )
+
+        frame_teclas.pack(
+            fill="both",
+            expand=True,
+            padx=8,
+            pady=5
+        )
+
+        teclas_letras = [
+            "C", "R", "U", "D", "Q", "L",
+            "J", "TP", "CN", "LED", "SW"
+        ]
+
+        for columna, tecla in enumerate(teclas_letras):
+            boton = ctk.CTkButton(
+                frame_teclas,
+                text=tecla,
+                height=52,
+                font=("Arial", 17, "bold"),
+                fg_color="#F39C12",
+                hover_color="#D68910",
+                command=lambda valor=tecla: self.procesar_tecla_smt(valor)
+            )
+
+            boton.grid(
+                row=0,
+                column=columna,
+                padx=4,
+                pady=4,
+                sticky="nsew"
+            )
+
+        # Números
+        teclas_numeros = [
+            "1", "2", "3", "4", "5",
+            "6", "7", "8", "9", "0"
+        ]
+
+        for columna, tecla in enumerate(teclas_numeros):
+            boton = ctk.CTkButton(
+                frame_teclas,
+                text=tecla,
+                height=52,
+                font=("Arial", 17, "bold"),
+                fg_color="#2878D0",
+                hover_color="#1F5EA3",
+                command=lambda valor=tecla: self.procesar_tecla_smt(valor)
+            )
+
+            boton.grid(
+                row=1,
+                column=columna,
+                padx=4,
+                pady=4,
+                sticky="nsew"
+            )
+            btn_borrar = ctk.CTkButton(
+                frame_teclas,
+                text="Borrar",
+                height=52,
+                font=("Arial", 16, "bold"),
+                fg_color="#C24155",
+                hover_color="#9F3345",
+                command=lambda: self.procesar_tecla_smt("Borrar")
+            )
+
+            btn_borrar.grid(
+                row=2,
+                column=0,
+                columnspan=3,
+                padx=4,
+                pady=4,
+                sticky="nsew"
+            )
+
+            btn_limpiar = ctk.CTkButton(
+                frame_teclas,
+                text="Limpiar",
+                height=52,
+                font=("Arial", 16, "bold"),
+                fg_color="#C24155",
+                hover_color="#9F3345",
+                command=lambda: self.procesar_tecla_smt("Limpiar")
+            )
+
+            btn_limpiar.grid(
+                row=2,
+                column=3,
+                columnspan=3,
+                padx=4,
+                pady=4,
+                sticky="nsew"
+            )
+
+            btn_aceptar = ctk.CTkButton(
+                frame_teclas,
+                text="Aceptar",
+                height=52,
+                font=("Arial", 16, "bold"),
+                fg_color="#2E8B57",
+                hover_color="#246B45",
+                command=lambda: self.procesar_tecla_smt("Aceptar")
+            )
+
+            btn_aceptar.grid(
+                row=2,
+                column=6,
+                columnspan=5,
+                padx=4,
+                pady=4,
+                sticky="nsew"
+            )
+            for columna in range(11):
+                frame_teclas.grid_columnconfigure(
+                    columna,
+                    weight=1,
+                    uniform="teclas_smt"
+                )
+
+    def procesar_tecla_smt(self, tecla):
+        """
+        Procesa las teclas del teclado SMT.
+        """
+
+        if self.entry_destino_teclado is None:
+            return
+
+        valor_actual = (
+            self.entry_destino_teclado
+            .get()
+            .strip()
+            .upper()
+        )
+
+        if tecla == "Borrar":
+            valor_nuevo = valor_actual[:-1]
+
+        elif tecla == "Limpiar":
+            valor_nuevo = ""
+
+
+        elif tecla == "Aceptar":
+
+            self.cerrar_teclado_smt()
+
+            self.agregar_defecto_pcb_actual()
+
+            return
+
+        else:
+            valor_nuevo = (
+                    valor_actual + tecla
+            )
+
+        self.entry_destino_teclado.delete(
+            0,
+            "end"
+        )
+
+        self.entry_destino_teclado.insert(
+            0,
+            valor_nuevo
+        )
+
+        self.lbl_teclado_valor.configure(
+            text=valor_nuevo
+        )
+
+    def cerrar_teclado_smt(self):
+        """
+        Cierra el teclado SMT.
+        """
+
+        if (
+                self.ventana_teclado_smt is not None
+                and self.ventana_teclado_smt.winfo_exists()
+        ):
+            self.ventana_teclado_smt.destroy()
+
+        self.ventana_teclado_smt = None
+        self.entry_destino_teclado = None
+
 
 
 if __name__ == "__main__":
