@@ -313,6 +313,42 @@ class RegistroDefectosSMT:
         )
         self.frame_acciones_panel.grid_columnconfigure(0, weight=1)
         self.frame_acciones_panel.grid_columnconfigure(1, weight=1)
+        self.frame_acciones_panel.grid_columnconfigure(2, weight=1)
+        self.frame_acciones_panel.grid_columnconfigure(3, weight=1)
+
+        self.btn_pass_panel = ctk.CTkButton(
+            self.frame_acciones_panel,
+            text="Panel PASS",
+            height=38,
+            font=("Arial", 15, "bold"),
+            fg_color="#2E8B57",
+            hover_color="#246B45",
+            # state="disabled",
+            command=self.confirmar_panel
+        )
+        self.btn_pass_panel.grid(
+            row=0,
+            column=0,
+            padx=(0, 7),
+            sticky="ew"
+        )
+
+        self.btn_fail_panel = ctk.CTkButton(
+            self.frame_acciones_panel,
+            text="Panel FAIL",
+            height=38,
+            font=("Arial", 15, "bold"),
+            fg_color="#8B0000",
+            hover_color="#8B0000",
+            # state="disabled",
+            # command=self.registrar_panel_pass
+        )
+        self.btn_fail_panel.grid(
+            row=0,
+            column=1,
+            padx=(0, 7),
+            sticky="ew"
+        )
 
         self.btn_cancelar_panel = ctk.CTkButton(
             self.frame_acciones_panel,
@@ -326,7 +362,7 @@ class RegistroDefectosSMT:
         )
         self.btn_cancelar_panel.grid(
             row=0,
-            column=0,
+            column=2,
             padx=(0, 7),
             sticky="ew"
         )
@@ -341,7 +377,7 @@ class RegistroDefectosSMT:
         )
         self.btn_confirmar_panel.grid(
             row=0,
-            column=1,
+            column=3,
             padx=(7, 0),
             sticky="ew"
         )
@@ -4152,9 +4188,9 @@ class RegistroDefectosSMT:
 
         self.indice_pcb_defecto_actual = 0
 
-        self.combo_modelos.configure(
-            state="readonly"
-        )
+        # self.combo_modelos.configure(
+        #   state="readonly"
+        # )
 
         self.restablecer_seleccion_panel()
 
@@ -6086,7 +6122,6 @@ class RegistroDefectosSMT:
                     sticky="nsew"
                 )
 
-
         # =====================================================
         # LEYENDA
         # =====================================================
@@ -6654,9 +6689,9 @@ class RegistroDefectosSMT:
         filas_funciones = 1
 
         total_filas = (
-                filas_letras
-                + filas_numeros
-                + filas_funciones
+            filas_letras
+            + filas_numeros
+            + filas_funciones
         )
 
         # =====================================================
@@ -6664,9 +6699,9 @@ class RegistroDefectosSMT:
         # =====================================================
 
         ancho_calculado = (
-                columnas * ancho_boton
-                + columnas * separacion * 2
-                + margen_horizontal
+            columnas * ancho_boton
+            + columnas * separacion * 2
+            + margen_horizontal
         )
 
         ancho = max(
@@ -6678,9 +6713,9 @@ class RegistroDefectosSMT:
         )
 
         alto_calculado = (
-                total_filas * alto_boton
-                + total_filas * separacion * 2
-                + margen_vertical
+            total_filas * alto_boton
+            + total_filas * separacion * 2
+            + margen_vertical
         )
 
         alto = max(
@@ -6838,12 +6873,12 @@ class RegistroDefectosSMT:
                     lista_teclas
             ):
                 fila = (
-                        fila_inicial
-                        + indice // columnas
+                    fila_inicial
+                    + indice // columnas
                 )
 
                 columna = (
-                        indice % columnas
+                    indice % columnas
                 )
 
                 boton = ctk.CTkButton(
@@ -6912,7 +6947,7 @@ class RegistroDefectosSMT:
         )
 
         columna_aceptar = (
-                span_borrar + span_limpiar
+            span_borrar + span_limpiar
         )
 
         span_aceptar = max(
@@ -7001,7 +7036,6 @@ class RegistroDefectosSMT:
             )
         )
 
-
     def procesar_tecla_smt(self, tecla):
         """
         Procesa las teclas del teclado SMT.
@@ -7023,7 +7057,6 @@ class RegistroDefectosSMT:
         elif tecla == "Limpiar":
             valor_nuevo = ""
 
-
         elif tecla == "Aceptar":
 
             self.cerrar_teclado_smt()
@@ -7034,7 +7067,7 @@ class RegistroDefectosSMT:
 
         else:
             valor_nuevo = (
-                    valor_actual + tecla
+                valor_actual + tecla
             )
 
         self.entry_destino_teclado.delete(
@@ -7064,7 +7097,6 @@ class RegistroDefectosSMT:
 
         self.ventana_teclado_smt = None
         self.entry_destino_teclado = None
-
 
 
 if __name__ == "__main__":
