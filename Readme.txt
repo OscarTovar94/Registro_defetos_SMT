@@ -12,14 +12,20 @@ Historial de Revisiones
 
 Rev. 1.0 - 21/07/2026
 - Creación inicial de la aplicación.
+
 Rev. 2.0 - 28/07/2026
 - Cambio en el registro de defectos.
 - Registros por PCB.
 - Validación de ID
+
 Rev. 3.0 - 28/07/2026
 - Registro por posiciones.
+
 Rev. 4.0 - 03/08/2026
 - Adaptación de la aplicación para su funcionamiento en 
 pantalla touch.
-- Creación de teclado virtual, configurable desde settings
+- Creación de teclado virtual, configurable desde settings.
+
+Rev. 4.1 - 05/08/2026
+- Posible modificar matriz de panel de PCB.
 ------------------------------------------------------------
