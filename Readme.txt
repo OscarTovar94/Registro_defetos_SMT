@@ -21,4 +21,5 @@ Rev. 3.0 - 28/07/2026
 Rev. 4.0 - 03/08/2026
 - Adaptación de la aplicación para su funcionamiento en 
 pantalla touch.
+- Creación de teclado virtual, configurable desde settings
 ------------------------------------------------------------

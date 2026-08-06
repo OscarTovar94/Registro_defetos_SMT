@@ -15,6 +15,8 @@ import win32api
 import winerror
 from matplotlib.figure import Figure
 import pandas as pd
+import configparser
+import math
 
 # ---- Control de instancia única ----
 MUTEX_NAME = "DefectosSMT_UnicaInstancia"
@@ -73,11 +75,17 @@ class RegistroDefectosSMT:
         self.renglones_panel = 0
         self.columnas_panel = 0
         self.total_pcb_panel = 0
+        # Configuración física de numeración del panel.
+        # Origen: SI, SD, II o ID.
+        # Recorrido: NORMAL o SERPIENTE.
+        self.origen_panel = "SI"
+        self.recorrido_panel = "NORMAL"
         self.posiciones_defectuosas = {}
         self.botones_pcb = {}
         self.frame_panel_pcb = None
         self.lbl_info_modelo = None
         self.btn_confirmar_panel = None
+        self.btn_cancelar_panel = None
         self.panel_actual = None
         self.ventana_captura_ids = None
         self.entries_ids_pcb = {}
@@ -292,8 +300,39 @@ class RegistroDefectosSMT:
         )
         self.frame_panel_pcb.grid(row=1, column=0, padx=20, pady=5)
 
-        self.btn_confirmar_panel = ctk.CTkButton(
+        self.frame_acciones_panel = ctk.CTkFrame(
             self.frame_panel_contenedor,
+            fg_color="transparent"
+        )
+        self.frame_acciones_panel.grid(
+            row=2,
+            column=0,
+            padx=20,
+            pady=(5, 10),
+            sticky="ew"
+        )
+        self.frame_acciones_panel.grid_columnconfigure(0, weight=1)
+        self.frame_acciones_panel.grid_columnconfigure(1, weight=1)
+
+        self.btn_cancelar_panel = ctk.CTkButton(
+            self.frame_acciones_panel,
+            text="Cancelar",
+            height=38,
+            font=("Arial", 15, "bold"),
+            fg_color="#5B627E",
+            hover_color="#484E66",
+            state="disabled",
+            command=self.cancelar_seleccion_panel
+        )
+        self.btn_cancelar_panel.grid(
+            row=0,
+            column=0,
+            padx=(0, 7),
+            sticky="ew"
+        )
+
+        self.btn_confirmar_panel = ctk.CTkButton(
+            self.frame_acciones_panel,
             text="Confirmar panel",
             height=38,
             font=("Arial", 15, "bold"),
@@ -301,7 +340,10 @@ class RegistroDefectosSMT:
             command=self.confirmar_panel
         )
         self.btn_confirmar_panel.grid(
-            row=2, column=0, padx=20, pady=(5, 10), sticky="ew"
+            row=0,
+            column=1,
+            padx=(7, 0),
+            sticky="ew"
         )
 
         # =========================================================
@@ -568,26 +610,29 @@ class RegistroDefectosSMT:
         """
         Lee models.ini con el formato:
 
-        Modelo,Renglones,Columnas,NumeroParte
+        Modelo,Renglones,Columnas,NumeroParte,Origen,Recorrido
 
-        Ejemplo:
-        Lion Mite,4,5,635125
+        Los dos últimos campos son opcionales para conservar
+        compatibilidad con archivos anteriores.
 
-        Retorna:
-        {
-            "Lion Mite": {
-                "renglones": 4,
-                "columnas": 5,
-                "numero_parte": "635125",
-                "total_pcb": 20
-            }
-        }
+        Origen:
+            SI = superior izquierda
+            SD = superior derecha
+            II = inferior izquierda
+            ID = inferior derecha
+
+        Recorrido:
+            NORMAL    = cada renglón conserva la misma dirección
+            SERPIENTE = cada renglón alterna su dirección
         """
 
         modelos = {}
 
         if not os.path.exists(ruta):
             return modelos
+
+        origenes_validos = {"SI", "SD", "II", "ID"}
+        recorridos_validos = {"NORMAL", "SERPIENTE"}
 
         try:
             with open(
@@ -602,36 +647,43 @@ class RegistroDefectosSMT:
                 ):
                     linea = linea.strip()
 
-                    if not linea:
+                    if not linea or linea.startswith(("#", ";")):
                         continue
 
-                    if linea.startswith(("#", ";")):
-                        continue
+                    partes = [
+                        parte.strip()
+                        for parte in linea.split(",")
+                    ]
 
-                    partes = linea.split(",")
-
-                    if len(partes) != 4:
+                    if len(partes) not in (4, 5, 6):
                         print(
                             f"Línea incorrecta en models.ini "
                             f"({numero_linea}): {linea}"
                         )
                         continue
 
-                    modelo = partes[0].strip()
-                    renglones_texto = partes[1].strip()
-                    columnas_texto = partes[2].strip()
-                    numero_parte = partes[3].strip()
+                    modelo = partes[0]
+                    renglones_texto = partes[1]
+                    columnas_texto = partes[2]
+                    numero_parte = partes[3]
+                    origen = (
+                        partes[4].upper()
+                        if len(partes) >= 5 and partes[4]
+                        else "SI"
+                    )
+                    recorrido = (
+                        partes[5].upper()
+                        if len(partes) >= 6 and partes[5]
+                        else "NORMAL"
+                    )
 
                     if not modelo:
-                        print(
-                            f"Modelo vacío en línea {numero_linea}."
-                        )
+                        print(f"Modelo vacío en línea {numero_linea}.")
                         continue
 
                     try:
                         renglones = int(renglones_texto)
                         columnas = int(columnas_texto)
-
                     except ValueError:
                         print(
                             f"Renglones o columnas incorrectos "
@@ -646,27 +698,34 @@ class RegistroDefectosSMT:
                         )
                         continue
 
-                    if len(numero_parte) != 6:
+                    if len(numero_parte) != 6 or not numero_parte.isdigit():
                         print(
                             f"El número de parte de {modelo} debe "
                             "contener exactamente 6 dígitos."
                         )
                         continue
 
-                    if not numero_parte.isdigit():
+                    if origen not in origenes_validos:
                         print(
-                            f"El número de parte de {modelo} debe "
-                            "contener solamente números."
+                            f"Origen incorrecto para {modelo}: {origen}. "
+                            "Se utilizará SI."
                         )
-                        continue
+                        origen = "SI"
 
-                    total_pcb = renglones * columnas
+                    if recorrido not in recorridos_validos:
+                        print(
+                            f"Recorrido incorrecto para {modelo}: "
+                            f"{recorrido}. Se utilizará NORMAL."
+                        )
+                        recorrido = "NORMAL"
 
                     modelos[modelo] = {
                         "renglones": renglones,
                         "columnas": columnas,
                         "numero_parte": numero_parte,
-                        "total_pcb": total_pcb
+                        "total_pcb": renglones * columnas,
+                        "origen": origen,
+                        "recorrido": recorrido
                     }
 
         except UnicodeDecodeError:
@@ -1812,6 +1871,16 @@ class RegistroDefectosSMT:
             "total_pcb"
         ]
 
+        self.origen_panel = configuracion.get(
+            "origen",
+            "SI"
+        )
+
+        self.recorrido_panel = configuracion.get(
+            "recorrido",
+            "NORMAL"
+        )
+
         # Reiniciar los datos del panel anterior
         self.posiciones_defectuosas.clear()
         self.botones_pcb.clear()
@@ -1827,14 +1896,62 @@ class RegistroDefectosSMT:
 
         self.mostrar_panel_modelo()
 
+    @staticmethod
+    def obtener_nombre_origen_panel(origen):
+        nombres = {
+            "SI": "Superior izquierda",
+            "SD": "Superior derecha",
+            "II": "Inferior izquierda",
+            "ID": "Inferior derecha"
+        }
+        return nombres.get(origen, "Superior izquierda")
+
+    def obtener_distribucion_pcb(
+        self,
+        renglones,
+        columnas,
+        origen="SI",
+        recorrido="NORMAL"
+    ):
+        """Crea la matriz física de numeración del panel."""
+
+        origen = str(origen).strip().upper()
+        recorrido = str(recorrido).strip().upper()
+
+        matriz = []
+        numero_pcb = 1
+
+        for renglon in range(renglones):
+            fila = list(
+                range(
+                    numero_pcb,
+                    numero_pcb + columnas
+                )
+            )
+            numero_pcb += columnas
+
+            if recorrido == "SERPIENTE" and renglon % 2 == 1:
+                fila.reverse()
+
+            matriz.append(fila)
+
+        if origen in ("SD", "ID"):
+            matriz = [list(reversed(fila)) for fila in matriz]
+
+        if origen in ("II", "ID"):
+            matriz.reverse()
+
+        return matriz
+
     def mostrar_panel_modelo(self):
         """
-        Dibuja la cuadrícula del modelo seleccionado.
+        Dibuja la cuadrícula del modelo seleccionado respetando
+        el origen y el recorrido configurados en models.ini.
         """
-        self.frame_panel_pcb.grid()
-
         if self.frame_panel_pcb is None:
             return
+
+        self.frame_panel_pcb.grid()
 
         for widget in self.frame_panel_pcb.winfo_children():
             widget.destroy()
@@ -1846,20 +1963,23 @@ class RegistroDefectosSMT:
             self.lbl_info_modelo.configure(
                 text="Seleccione un modelo"
             )
-
-            self.btn_confirmar_panel.configure(
-                state="disabled"
-            )
+            self.btn_confirmar_panel.configure(state="disabled")
+            self.btn_cancelar_panel.configure(state="disabled")
             return
+
+        nombre_origen = self.obtener_nombre_origen_panel(
+            self.origen_panel
+        )
 
         self.lbl_info_modelo.configure(
             text=(
                 f"Modelo: {self.modelo_actual}     "
                 f"Número de parte: {self.numero_parte_actual}     "
-                f"Configuración: "
-                f"{self.renglones_panel} × "
+                f"Configuración: {self.renglones_panel} × "
                 f"{self.columnas_panel}     "
-                f"Total PCB: {self.total_pcb_panel}"
+                f"Total PCB: {self.total_pcb_panel}\n"
+                f"PCB 1: {nombre_origen}     "
+                f"Recorrido: {self.recorrido_panel.title()}"
             )
         )
 
@@ -1870,10 +1990,16 @@ class RegistroDefectosSMT:
                 uniform="pcb"
             )
 
-        numero_pcb = 1
+        distribucion = self.obtener_distribucion_pcb(
+            self.renglones_panel,
+            self.columnas_panel,
+            self.origen_panel,
+            self.recorrido_panel
+        )
 
         for renglon in range(self.renglones_panel):
             for columna in range(self.columnas_panel):
+                numero_pcb = distribucion[renglon][columna]
 
                 boton = ctk.CTkButton(
                     self.frame_panel_pcb,
@@ -1885,9 +2011,7 @@ class RegistroDefectosSMT:
                     fg_color="#454B70",
                     hover_color="#596083",
                     command=lambda posicion=numero_pcb: (
-                        self.seleccionar_posicion_pcb(
-                            posicion
-                        )
+                        self.seleccionar_posicion_pcb(posicion)
                     )
                 )
 
@@ -1900,11 +2024,37 @@ class RegistroDefectosSMT:
                 )
 
                 self.botones_pcb[numero_pcb] = boton
-                numero_pcb += 1
 
-        self.btn_confirmar_panel.configure(
-            state="normal"
-        )
+        self.btn_confirmar_panel.configure(state="normal")
+        self.btn_cancelar_panel.configure(state="normal")
+
+    def cancelar_seleccion_panel(self):
+        """Cancela el modelo y la matriz antes de confirmar el panel."""
+
+        if self.proceso_panel_activo:
+            messagebox.showwarning(
+                "Inspección en proceso",
+                "No es posible cancelar desde esta etapa."
+            )
+            return
+
+        if self.modelo_actual is None:
+            self.restablecer_seleccion_panel()
+            return
+
+        if self.posiciones_defectuosas:
+            respuesta = messagebox.askyesno(
+                "Cancelar selección",
+                (
+                    "¿Desea cancelar la selección del panel?\n\n"
+                    "Las PCB marcadas como defectuosas se perderán."
+                ),
+                parent=self.root
+            )
+            if not respuesta:
+                return
+
+        self.restablecer_seleccion_panel()
 
     def seleccionar_posicion_pcb(self, posicion):
         """
@@ -2042,6 +2192,8 @@ class RegistroDefectosSMT:
             "numero_parte": self.numero_parte_actual,
             "renglones": self.renglones_panel,
             "columnas": self.columnas_panel,
+            "origen": self.origen_panel,
+            "recorrido": self.recorrido_panel,
             "total_pcb": self.total_pcb_panel,
             "total_buenas": (
                 self.total_pcb_panel
@@ -2070,6 +2222,11 @@ class RegistroDefectosSMT:
             state="disabled"
         )
 
+        if self.btn_cancelar_panel is not None:
+            self.btn_cancelar_panel.configure(
+                state="disabled"
+            )
+
         for boton in self.botones_pcb.values():
             boton.configure(
                 state="disabled"
@@ -2089,6 +2246,11 @@ class RegistroDefectosSMT:
         self.btn_confirmar_panel.configure(
             state="normal"
         )
+
+        if self.btn_cancelar_panel is not None:
+            self.btn_cancelar_panel.configure(
+                state="normal"
+            )
 
         for boton in self.botones_pcb.values():
             boton.configure(
@@ -3601,25 +3763,36 @@ class RegistroDefectosSMT:
 
     def obtener_coordenadas_posicion(self, posicion):
         """
-        Convierte el número de posición en renglón y columna.
-
-        La numeración comienza en 1.
+        Retorna el renglón y la columna físicos donde se muestra
+        una PCB, respetando origen y recorrido.
         """
 
-        if self.columnas_panel <= 0:
+        if self.columnas_panel <= 0 or self.renglones_panel <= 0:
             return 0, 0
 
-        renglon = (
-            (posicion - 1)
-            // self.columnas_panel
-        ) + 1
+        origen = self.origen_panel
+        recorrido = self.recorrido_panel
 
-        columna = (
-            (posicion - 1)
-            % self.columnas_panel
-        ) + 1
+        if self.panel_actual:
+            origen = self.panel_actual.get("origen", origen)
+            recorrido = self.panel_actual.get(
+                "recorrido",
+                recorrido
+            )
 
-        return renglon, columna
+        distribucion = self.obtener_distribucion_pcb(
+            self.renglones_panel,
+            self.columnas_panel,
+            origen,
+            recorrido
+        )
+
+        for renglon, fila in enumerate(distribucion, start=1):
+            for columna, numero_pcb in enumerate(fila, start=1):
+                if numero_pcb == posicion:
+                    return renglon, columna
+
+        return 0, 0
 
     def asegurar_encabezados_log_pcb(self):
         """
@@ -3998,6 +4171,8 @@ class RegistroDefectosSMT:
         self.renglones_panel = 0
         self.columnas_panel = 0
         self.total_pcb_panel = 0
+        self.origen_panel = "SI"
+        self.recorrido_panel = "NORMAL"
 
         self.modelo_seleccionado.set(
             self.opcion_seleccionar_panel
@@ -4019,6 +4194,11 @@ class RegistroDefectosSMT:
 
         if self.btn_confirmar_panel is not None:
             self.btn_confirmar_panel.configure(
+                state="disabled"
+            )
+
+        if self.btn_cancelar_panel is not None:
+            self.btn_cancelar_panel.configure(
                 state="disabled"
             )
 
@@ -5833,10 +6013,18 @@ class RegistroDefectosSMT:
                 uniform="heatmap_pcb"
             )
 
-        numero_pcb = 1
+        origen = configuracion.get("origen", "SI")
+        recorrido = configuracion.get("recorrido", "NORMAL")
+        distribucion = self.obtener_distribucion_pcb(
+            renglones,
+            columnas,
+            origen,
+            recorrido
+        )
 
         for renglon in range(renglones):
             for columna in range(columnas):
+                numero_pcb = distribucion[renglon][columna]
 
                 datos_pcb = self.datos_heatmap_pcb.get(
                     numero_pcb,
@@ -5898,7 +6086,6 @@ class RegistroDefectosSMT:
                     sticky="nsew"
                 )
 
-                numero_pcb += 1
 
         # =====================================================
         # LEYENDA
@@ -6273,11 +6460,13 @@ class RegistroDefectosSMT:
 
     def abrir_teclado_smt(self, entry_destino):
         """
-        Abre un teclado virtual especializado para posiciones SMT.
+        Abre un teclado virtual SMT configurable desde settings.ini.
+        La ventana ajusta automáticamente su tamaño y distribución.
         """
 
         self.entry_destino_teclado = entry_destino
 
+        # Si ya está abierto, solo traerlo al frente.
         if (
                 self.ventana_teclado_smt is not None
                 and self.ventana_teclado_smt.winfo_exists()
@@ -6285,6 +6474,223 @@ class RegistroDefectosSMT:
             self.ventana_teclado_smt.lift()
             self.ventana_teclado_smt.focus_force()
             return
+
+        # =====================================================
+        # CARGAR CONFIGURACIÓN
+        # =====================================================
+
+        config = configparser.ConfigParser()
+
+        ruta_settings = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "C:/Registro_defetos_SMT/Settings/settings.ini"
+        )
+
+        config.read(
+            ruta_settings,
+            encoding="utf-8"
+        )
+
+        seccion = "TECLADO_SMT"
+
+        def obtener_lista(opcion, valor_default):
+            texto = config.get(
+                seccion,
+                opcion,
+                fallback=valor_default
+            )
+
+            return [
+                elemento.strip()
+                for elemento in texto.split(",")
+                if elemento.strip()
+            ]
+
+        teclas_letras = obtener_lista(
+            "teclas_letras",
+            "C,R,U,D,Q,L,J,TP,CN,LED,SW"
+        )
+
+        teclas_numeros = obtener_lista(
+            "teclas_numeros",
+            "1,2,3,4,5,6,7,8,9,0"
+        )
+
+        columnas_configuradas = config.getint(
+            seccion,
+            "columnas",
+            fallback=11
+        )
+
+        ancho_boton = config.getint(
+            seccion,
+            "ancho_boton",
+            fallback=66
+        )
+
+        alto_boton = config.getint(
+            seccion,
+            "alto_boton",
+            fallback=52
+        )
+
+        separacion = config.getint(
+            seccion,
+            "separacion",
+            fallback=4
+        )
+
+        margen_horizontal = config.getint(
+            seccion,
+            "margen_horizontal",
+            fallback=55
+        )
+
+        margen_vertical = config.getint(
+            seccion,
+            "margen_vertical",
+            fallback=130
+        )
+
+        ancho_minimo = config.getint(
+            seccion,
+            "ancho_minimo",
+            fallback=720
+        )
+
+        ancho_maximo = config.getint(
+            seccion,
+            "ancho_maximo",
+            fallback=1500
+        )
+
+        alto_minimo = config.getint(
+            seccion,
+            "alto_minimo",
+            fallback=330
+        )
+
+        color_letras = config.get(
+            seccion,
+            "color_letras",
+            fallback="#F39C12"
+        )
+
+        hover_letras = config.get(
+            seccion,
+            "hover_letras",
+            fallback="#D68910"
+        )
+
+        color_numeros = config.get(
+            seccion,
+            "color_numeros",
+            fallback="#2878D0"
+        )
+
+        hover_numeros = config.get(
+            seccion,
+            "hover_numeros",
+            fallback="#1F5EA3"
+        )
+
+        color_borrar = config.get(
+            seccion,
+            "color_borrar",
+            fallback="#C24155"
+        )
+
+        hover_borrar = config.get(
+            seccion,
+            "hover_borrar",
+            fallback="#9F3345"
+        )
+
+        color_aceptar = config.get(
+            seccion,
+            "color_aceptar",
+            fallback="#2E8B57"
+        )
+
+        hover_aceptar = config.get(
+            seccion,
+            "hover_aceptar",
+            fallback="#246B45"
+        )
+
+        # Evita valores inválidos.
+        columnas = max(
+            3,
+            columnas_configuradas
+        )
+
+        # No permitir más columnas que teclas en la fila más grande,
+        # salvo que se desee conservar espacio extra.
+        cantidad_maxima_teclas = max(
+            len(teclas_letras),
+            len(teclas_numeros),
+            3
+        )
+
+        columnas = min(
+            columnas,
+            max(cantidad_maxima_teclas, 3)
+        )
+
+        filas_letras = max(
+            1,
+            math.ceil(
+                len(teclas_letras) / columnas
+            )
+        )
+
+        filas_numeros = max(
+            1,
+            math.ceil(
+                len(teclas_numeros) / columnas
+            )
+        )
+
+        filas_funciones = 1
+
+        total_filas = (
+                filas_letras
+                + filas_numeros
+                + filas_funciones
+        )
+
+        # =====================================================
+        # CALCULAR TAMAÑO AUTOMÁTICO
+        # =====================================================
+
+        ancho_calculado = (
+                columnas * ancho_boton
+                + columnas * separacion * 2
+                + margen_horizontal
+        )
+
+        ancho = max(
+            ancho_minimo,
+            min(
+                ancho_calculado,
+                ancho_maximo
+            )
+        )
+
+        alto_calculado = (
+                total_filas * alto_boton
+                + total_filas * separacion * 2
+                + margen_vertical
+        )
+
+        alto = max(
+            alto_minimo,
+            alto_calculado
+        )
+
+        # =====================================================
+        # CREAR VENTANA
+        # =====================================================
 
         self.ventana_teclado_smt = ctk.CTkToplevel(
             self.ventana_registro_defectos
@@ -6294,8 +6700,10 @@ class RegistroDefectosSMT:
             "Teclado de posición SMT"
         )
 
-        self.ventana_teclado_smt.geometry("720x330")
-        self.ventana_teclado_smt.resizable(False, False)
+        self.ventana_teclado_smt.resizable(
+            True,
+            True
+        )
 
         self.ventana_teclado_smt.transient(
             self.ventana_registro_defectos
@@ -6308,12 +6716,6 @@ class RegistroDefectosSMT:
             self.cerrar_teclado_smt
         )
 
-        # Colocarlo abajo y centrado.
-        self.ventana_teclado_smt.update_idletasks()
-
-        ancho = 720
-        alto = 330
-
         ancho_pantalla = (
             self.ventana_teclado_smt.winfo_screenwidth()
         )
@@ -6322,28 +6724,66 @@ class RegistroDefectosSMT:
             self.ventana_teclado_smt.winfo_screenheight()
         )
 
-        posicion_x = (
-                             ancho_pantalla - ancho
-                     ) // 2
+        # Evita que la ventana sea más grande que la pantalla.
+        ancho = min(
+            ancho,
+            ancho_pantalla - 30
+        )
 
-        posicion_y = (
-                alto_pantalla - alto - 50
+        alto = min(
+            alto,
+            alto_pantalla - 70
+        )
+
+        posicion_x = max(
+            0,
+            (ancho_pantalla - ancho) // 2
+        )
+
+        posicion_y = max(
+            0,
+            alto_pantalla - alto - 45
         )
 
         self.ventana_teclado_smt.geometry(
             f"{ancho}x{alto}+{posicion_x}+{posicion_y}"
         )
 
+        self.ventana_teclado_smt.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        self.ventana_teclado_smt.grid_rowconfigure(
+            0,
+            weight=1
+        )
+
+        # =====================================================
+        # CONTENEDOR PRINCIPAL
+        # =====================================================
+
         frame_principal = ctk.CTkFrame(
             self.ventana_teclado_smt,
             corner_radius=12
         )
 
-        frame_principal.pack(
-            fill="both",
-            expand=True,
+        frame_principal.grid(
+            row=0,
+            column=0,
             padx=12,
-            pady=12
+            pady=12,
+            sticky="nsew"
+        )
+
+        frame_principal.grid_columnconfigure(
+            0,
+            weight=1
+        )
+
+        frame_principal.grid_rowconfigure(
+            1,
+            weight=1
         )
 
         self.lbl_teclado_valor = ctk.CTkLabel(
@@ -6356,10 +6796,12 @@ class RegistroDefectosSMT:
             anchor="center"
         )
 
-        self.lbl_teclado_valor.pack(
-            fill="x",
+        self.lbl_teclado_valor.grid(
+            row=0,
+            column=0,
             padx=10,
-            pady=(10, 12)
+            pady=(10, 12),
+            sticky="ew"
         )
 
         frame_teclas = ctk.CTkFrame(
@@ -6367,123 +6809,198 @@ class RegistroDefectosSMT:
             fg_color="transparent"
         )
 
-        frame_teclas.pack(
-            fill="both",
-            expand=True,
+        frame_teclas.grid(
+            row=1,
+            column=0,
             padx=8,
-            pady=5
+            pady=5,
+            sticky="nsew"
         )
 
-        teclas_letras = [
-            "C", "R", "U", "D", "Q", "L",
-            "J", "TP", "CN", "LED", "SW"
-        ]
-
-        for columna, tecla in enumerate(teclas_letras):
-            boton = ctk.CTkButton(
-                frame_teclas,
-                text=tecla,
-                height=52,
-                font=("Arial", 17, "bold"),
-                fg_color="#F39C12",
-                hover_color="#D68910",
-                command=lambda valor=tecla: self.procesar_tecla_smt(valor)
+        for columna in range(columnas):
+            frame_teclas.grid_columnconfigure(
+                columna,
+                weight=1,
+                uniform="teclas_smt"
             )
 
-            boton.grid(
-                row=0,
-                column=columna,
-                padx=4,
-                pady=4,
-                sticky="nsew"
-            )
+        # =====================================================
+        # FUNCIÓN INTERNA PARA CREAR FILAS
+        # =====================================================
 
-        # Números
-        teclas_numeros = [
-            "1", "2", "3", "4", "5",
-            "6", "7", "8", "9", "0"
-        ]
-
-        for columna, tecla in enumerate(teclas_numeros):
-            boton = ctk.CTkButton(
-                frame_teclas,
-                text=tecla,
-                height=52,
-                font=("Arial", 17, "bold"),
-                fg_color="#2878D0",
-                hover_color="#1F5EA3",
-                command=lambda valor=tecla: self.procesar_tecla_smt(valor)
-            )
-
-            boton.grid(
-                row=1,
-                column=columna,
-                padx=4,
-                pady=4,
-                sticky="nsew"
-            )
-            btn_borrar = ctk.CTkButton(
-                frame_teclas,
-                text="Borrar",
-                height=52,
-                font=("Arial", 16, "bold"),
-                fg_color="#C24155",
-                hover_color="#9F3345",
-                command=lambda: self.procesar_tecla_smt("Borrar")
-            )
-
-            btn_borrar.grid(
-                row=2,
-                column=0,
-                columnspan=3,
-                padx=4,
-                pady=4,
-                sticky="nsew"
-            )
-
-            btn_limpiar = ctk.CTkButton(
-                frame_teclas,
-                text="Limpiar",
-                height=52,
-                font=("Arial", 16, "bold"),
-                fg_color="#C24155",
-                hover_color="#9F3345",
-                command=lambda: self.procesar_tecla_smt("Limpiar")
-            )
-
-            btn_limpiar.grid(
-                row=2,
-                column=3,
-                columnspan=3,
-                padx=4,
-                pady=4,
-                sticky="nsew"
-            )
-
-            btn_aceptar = ctk.CTkButton(
-                frame_teclas,
-                text="Aceptar",
-                height=52,
-                font=("Arial", 16, "bold"),
-                fg_color="#2E8B57",
-                hover_color="#246B45",
-                command=lambda: self.procesar_tecla_smt("Aceptar")
-            )
-
-            btn_aceptar.grid(
-                row=2,
-                column=6,
-                columnspan=5,
-                padx=4,
-                pady=4,
-                sticky="nsew"
-            )
-            for columna in range(11):
-                frame_teclas.grid_columnconfigure(
-                    columna,
-                    weight=1,
-                    uniform="teclas_smt"
+        def crear_teclas(
+                lista_teclas,
+                fila_inicial,
+                color,
+                hover
+        ):
+            for indice, tecla in enumerate(
+                    lista_teclas
+            ):
+                fila = (
+                        fila_inicial
+                        + indice // columnas
                 )
+
+                columna = (
+                        indice % columnas
+                )
+
+                boton = ctk.CTkButton(
+                    frame_teclas,
+                    text=tecla,
+                    height=alto_boton,
+                    font=("Arial", 17, "bold"),
+                    fg_color=color,
+                    hover_color=hover,
+                    command=lambda valor=tecla: (
+                        self.procesar_tecla_smt(
+                            valor
+                        )
+                    )
+                )
+
+                boton.grid(
+                    row=fila,
+                    column=columna,
+                    padx=separacion,
+                    pady=separacion,
+                    sticky="nsew"
+                )
+
+        # =====================================================
+        # TECLAS DE LETRAS
+        # =====================================================
+
+        fila_actual = 0
+
+        crear_teclas(
+            teclas_letras,
+            fila_actual,
+            color_letras,
+            hover_letras
+        )
+
+        fila_actual += filas_letras
+
+        # =====================================================
+        # TECLAS NUMÉRICAS
+        # =====================================================
+
+        crear_teclas(
+            teclas_numeros,
+            fila_actual,
+            color_numeros,
+            hover_numeros
+        )
+
+        fila_actual += filas_numeros
+
+        # =====================================================
+        # BOTONES DE FUNCIÓN
+        # =====================================================
+
+        # Distribuye el ancho total entre tres botones.
+        span_borrar = max(
+            1,
+            columnas // 3
+        )
+
+        span_limpiar = max(
+            1,
+            columnas // 3
+        )
+
+        columna_aceptar = (
+                span_borrar + span_limpiar
+        )
+
+        span_aceptar = max(
+            1,
+            columnas - columna_aceptar
+        )
+
+        btn_borrar = ctk.CTkButton(
+            frame_teclas,
+            text="Borrar",
+            height=alto_boton,
+            font=("Arial", 16, "bold"),
+            fg_color=color_borrar,
+            hover_color=hover_borrar,
+            command=lambda: (
+                self.procesar_tecla_smt(
+                    "Borrar"
+                )
+            )
+        )
+
+        btn_borrar.grid(
+            row=fila_actual,
+            column=0,
+            columnspan=span_borrar,
+            padx=separacion,
+            pady=separacion,
+            sticky="nsew"
+        )
+
+        btn_limpiar = ctk.CTkButton(
+            frame_teclas,
+            text="Limpiar",
+            height=alto_boton,
+            font=("Arial", 16, "bold"),
+            fg_color=color_borrar,
+            hover_color=hover_borrar,
+            command=lambda: (
+                self.procesar_tecla_smt(
+                    "Limpiar"
+                )
+            )
+        )
+
+        btn_limpiar.grid(
+            row=fila_actual,
+            column=span_borrar,
+            columnspan=span_limpiar,
+            padx=separacion,
+            pady=separacion,
+            sticky="nsew"
+        )
+
+        btn_aceptar = ctk.CTkButton(
+            frame_teclas,
+            text="Aceptar",
+            height=alto_boton,
+            font=("Arial", 16, "bold"),
+            fg_color=color_aceptar,
+            hover_color=hover_aceptar,
+            command=lambda: (
+                self.procesar_tecla_smt(
+                    "Aceptar"
+                )
+            )
+        )
+
+        btn_aceptar.grid(
+            row=fila_actual,
+            column=columna_aceptar,
+            columnspan=span_aceptar,
+            padx=separacion,
+            pady=separacion,
+            sticky="nsew"
+        )
+
+        # =====================================================
+        # TRAER AL FRENTE
+        # =====================================================
+
+        self.ventana_teclado_smt.after(
+            100,
+            lambda: (
+                self.ventana_teclado_smt.lift(),
+                self.ventana_teclado_smt.focus_force()
+            )
+        )
+
 
     def procesar_tecla_smt(self, tecla):
         """
