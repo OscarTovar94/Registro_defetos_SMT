@@ -75,16 +75,24 @@ class RegistroDefectosSMT:
         self.renglones_panel = 0
         self.columnas_panel = 0
         self.total_pcb_panel = 0
+        # Configuración física de numeración del panel.
+        # Origen: SI, SD, II o ID.
+        # Recorrido: NORMAL o SERPIENTE.
+        self.origen_panel = "SI"
+        self.recorrido_panel = "NORMAL"
         self.posiciones_defectuosas = {}
         self.botones_pcb = {}
         self.frame_panel_pcb = None
         self.lbl_info_modelo = None
         self.btn_confirmar_panel = None
+        self.btn_cancelar_panel = None
         self.panel_actual = None
         self.ventana_captura_ids = None
         self.entries_ids_pcb = {}
         self.labels_estado_ids = {}
         self.proceso_panel_activo = False
+        # True mientras el operador está seleccionando un panel FAIL.
+        self.modo_panel_fail = False
         self.ventana_registro_defectos = None
         self.posiciones_pendientes_defectos = []
         self.indice_pcb_defecto_actual = 0
@@ -285,7 +293,7 @@ class RegistroDefectosSMT:
             font=("Arial", 17, "bold"),
             text_color="#DDE2FF"
         )
-        self.lbl_info_modelo.grid(row=0, column=0, padx=20, pady=(10, 5))
+        self.lbl_info_modelo.grid(row=0, column=0, padx=20, pady=5)
 
         self.frame_panel_pcb = ctk.CTkFrame(
             self.frame_panel_contenedor,
@@ -294,8 +302,75 @@ class RegistroDefectosSMT:
         )
         self.frame_panel_pcb.grid(row=1, column=0, padx=20, pady=5)
 
-        self.btn_confirmar_panel = ctk.CTkButton(
+        self.frame_acciones_panel = ctk.CTkFrame(
             self.frame_panel_contenedor,
+            fg_color="transparent"
+        )
+        self.frame_acciones_panel.grid(
+            row=2,
+            column=0,
+            padx=20,
+            pady=(5, 10),
+            sticky="ew"
+        )
+        self.frame_acciones_panel.grid_columnconfigure(0, weight=1)
+        self.frame_acciones_panel.grid_columnconfigure(1, weight=1)
+        self.frame_acciones_panel.grid_columnconfigure(2, weight=1)
+        self.frame_acciones_panel.grid_columnconfigure(3, weight=1)
+
+        self.btn_pass_panel = ctk.CTkButton(
+            self.frame_acciones_panel,
+            text="Panel PASS",
+            height=38,
+            font=("Arial", 15, "bold"),
+            fg_color="#2E8B57",
+            hover_color="#246B45",
+            state="disabled",
+            command=self.registrar_panel_pass
+        )
+        self.btn_pass_panel.grid(
+            row=0,
+            column=0,
+            padx=(0, 7),
+            sticky="ew"
+        )
+
+        self.btn_fail_panel = ctk.CTkButton(
+            self.frame_acciones_panel,
+            text="Panel FAIL",
+            height=38,
+            font=("Arial", 15, "bold"),
+            fg_color="#8B0000",
+            hover_color="#6F0000",
+            state="disabled",
+            command=self.iniciar_panel_fail
+        )
+        self.btn_fail_panel.grid(
+            row=0,
+            column=1,
+            padx=(0, 7),
+            sticky="ew"
+        )
+
+        self.btn_cancelar_panel = ctk.CTkButton(
+            self.frame_acciones_panel,
+            text="Cancelar",
+            height=38,
+            font=("Arial", 15, "bold"),
+            fg_color="#5B627E",
+            hover_color="#484E66",
+            state="disabled",
+            command=self.cancelar_seleccion_panel
+        )
+        self.btn_cancelar_panel.grid(
+            row=0,
+            column=2,
+            padx=(0, 7),
+            sticky="ew"
+        )
+
+        self.btn_confirmar_panel = ctk.CTkButton(
+            self.frame_acciones_panel,
             text="Confirmar panel",
             height=38,
             font=("Arial", 15, "bold"),
@@ -303,7 +378,10 @@ class RegistroDefectosSMT:
             command=self.confirmar_panel
         )
         self.btn_confirmar_panel.grid(
-            row=2, column=0, padx=20, pady=(5, 10), sticky="ew"
+            row=0,
+            column=3,
+            padx=(7, 0),
+            sticky="ew"
         )
 
         # =========================================================
@@ -570,26 +648,29 @@ class RegistroDefectosSMT:
         """
         Lee models.ini con el formato:
 
-        Modelo,Renglones,Columnas,NumeroParte
+        Modelo,Renglones,Columnas,NumeroParte,Origen,Recorrido
 
-        Ejemplo:
-        Lion Mite,4,5,635125
+        Los dos últimos campos son opcionales para conservar
+        compatibilidad con archivos anteriores.
 
-        Retorna:
-        {
-            "Lion Mite": {
-                "renglones": 4,
-                "columnas": 5,
-                "numero_parte": "635125",
-                "total_pcb": 20
-            }
-        }
+        Origen:
+            SI = superior izquierda
+            SD = superior derecha
+            II = inferior izquierda
+            ID = inferior derecha
+
+        Recorrido:
+            NORMAL    = cada renglón conserva la misma dirección
+            SERPIENTE = cada renglón alterna su dirección
         """
 
         modelos = {}
 
         if not os.path.exists(ruta):
             return modelos
+
+        origenes_validos = {"SI", "SD", "II", "ID"}
+        recorridos_validos = {"NORMAL", "SERPIENTE"}
 
         try:
             with open(
@@ -604,36 +685,43 @@ class RegistroDefectosSMT:
                 ):
                     linea = linea.strip()
 
-                    if not linea:
+                    if not linea or linea.startswith(("#", ";")):
                         continue
 
-                    if linea.startswith(("#", ";")):
-                        continue
+                    partes = [
+                        parte.strip()
+                        for parte in linea.split(",")
+                    ]
 
-                    partes = linea.split(",")
-
-                    if len(partes) != 4:
+                    if len(partes) not in (4, 5, 6):
                         print(
                             f"Línea incorrecta en models.ini "
                             f"({numero_linea}): {linea}"
                         )
                         continue
 
-                    modelo = partes[0].strip()
-                    renglones_texto = partes[1].strip()
-                    columnas_texto = partes[2].strip()
-                    numero_parte = partes[3].strip()
+                    modelo = partes[0]
+                    renglones_texto = partes[1]
+                    columnas_texto = partes[2]
+                    numero_parte = partes[3]
+                    origen = (
+                        partes[4].upper()
+                        if len(partes) >= 5 and partes[4]
+                        else "SI"
+                    )
+                    recorrido = (
+                        partes[5].upper()
+                        if len(partes) >= 6 and partes[5]
+                        else "NORMAL"
+                    )
 
                     if not modelo:
-                        print(
-                            f"Modelo vacío en línea {numero_linea}."
-                        )
+                        print(f"Modelo vacío en línea {numero_linea}.")
                         continue
 
                     try:
                         renglones = int(renglones_texto)
                         columnas = int(columnas_texto)
-
                     except ValueError:
                         print(
                             f"Renglones o columnas incorrectos "
@@ -648,27 +736,34 @@ class RegistroDefectosSMT:
                         )
                         continue
 
-                    if len(numero_parte) != 6:
+                    if len(numero_parte) != 6 or not numero_parte.isdigit():
                         print(
                             f"El número de parte de {modelo} debe "
                             "contener exactamente 6 dígitos."
                         )
                         continue
 
-                    if not numero_parte.isdigit():
+                    if origen not in origenes_validos:
                         print(
-                            f"El número de parte de {modelo} debe "
-                            "contener solamente números."
+                            f"Origen incorrecto para {modelo}: {origen}. "
+                            "Se utilizará SI."
                         )
-                        continue
+                        origen = "SI"
 
-                    total_pcb = renglones * columnas
+                    if recorrido not in recorridos_validos:
+                        print(
+                            f"Recorrido incorrecto para {modelo}: "
+                            f"{recorrido}. Se utilizará NORMAL."
+                        )
+                        recorrido = "NORMAL"
 
                     modelos[modelo] = {
                         "renglones": renglones,
                         "columnas": columnas,
                         "numero_parte": numero_parte,
-                        "total_pcb": total_pcb
+                        "total_pcb": renglones * columnas,
+                        "origen": origen,
+                        "recorrido": recorrido
                     }
 
         except UnicodeDecodeError:
@@ -1760,83 +1855,226 @@ class RegistroDefectosSMT:
 
     def seleccionar_modelo(self, modelo):
         """
-        Carga en memoria la configuración del modelo seleccionado.
-        """
+        Carga la configuración del modelo seleccionado.
 
-        if self.proceso_panel_activo:
+        Al seleccionar un modelo no se muestra todavía la matriz.
+        El modelo permanece seleccionado después de registrar cada panel
+        hasta que el operador elija otro modelo.
+        """
+        if self.proceso_panel_activo or self.modo_panel_fail:
             messagebox.showwarning(
                 "Inspección en proceso",
                 (
                     "No puede cambiar el modelo mientras exista "
                     "una inspección en proceso."
-                )
+                ),
+                parent=self.root
             )
-
             if self.modelo_actual:
-                self.modelo_seleccionado.set(
-                    self.modelo_actual
-                )
-
+                self.modelo_seleccionado.set(self.modelo_actual)
             return
 
         modelo = modelo.strip()
+
         if modelo == self.opcion_seleccionar_panel:
             self.restablecer_seleccion_panel()
             return
 
         if modelo not in self.configuracion_modelos:
-            self.modelo_actual = None
-            self.numero_parte_actual = ""
-            self.renglones_panel = 0
-            self.columnas_panel = 0
-            self.total_pcb_panel = 0
+            self.restablecer_seleccion_panel()
             return
 
-        configuracion = self.configuracion_modelos[
-            modelo
-        ]
+        configuracion = self.configuracion_modelos[modelo]
 
         self.modelo_actual = modelo
+        self.numero_parte_actual = configuracion["numero_parte"]
+        self.renglones_panel = configuracion["renglones"]
+        self.columnas_panel = configuracion["columnas"]
+        self.total_pcb_panel = configuracion["total_pcb"]
+        self.origen_panel = configuracion.get("origen", "SI")
+        self.recorrido_panel = configuracion.get("recorrido", "NORMAL")
 
-        self.numero_parte_actual = configuracion[
-            "numero_parte"
-        ]
-
-        self.renglones_panel = configuracion[
-            "renglones"
-        ]
-
-        self.columnas_panel = configuracion[
-            "columnas"
-        ]
-
-        self.total_pcb_panel = configuracion[
-            "total_pcb"
-        ]
-
-        # Reiniciar los datos del panel anterior
         self.posiciones_defectuosas.clear()
         self.botones_pcb.clear()
+        self.modo_panel_fail = False
+
+        self.preparar_modelo_para_panel()
 
         print(
             f"Modelo: {self.modelo_actual} | "
             f"Número de parte: {self.numero_parte_actual} | "
-            f"Configuración: "
-            f"{self.renglones_panel} x "
+            f"Configuración: {self.renglones_panel} x "
             f"{self.columnas_panel} | "
             f"Total PCB: {self.total_pcb_panel}"
         )
 
+    def preparar_modelo_para_panel(self):
+        """
+        Deja el modelo seleccionado listo para registrar otro panel.
+
+        La matriz permanece oculta hasta presionar Panel FAIL.
+        """
+        if not self.modelo_actual:
+            return
+
+        self.frame_panel_pcb.grid_remove()
+
+        for widget in self.frame_panel_pcb.winfo_children():
+            widget.destroy()
+
+        self.botones_pcb.clear()
+        self.posiciones_defectuosas.clear()
+        self.modo_panel_fail = False
+        self.proceso_panel_activo = False
+
+        nombre_origen = self.obtener_nombre_origen_panel(self.origen_panel)
+
+        self.lbl_info_modelo.configure(
+            text=(
+                f"Modelo: {self.modelo_actual}     "
+                f"Número de parte: {self.numero_parte_actual}     "
+                f"Configuración: {self.renglones_panel} × "
+                f"{self.columnas_panel}     "
+                f"Total PCB: {self.total_pcb_panel}"
+                # f"PCB 1: {nombre_origen}     "
+                # f"Recorrido: {self.recorrido_panel.title()}"
+            )
+        )
+
+        self.lbl_estado_proceso.configure(
+            text="Seleccione el resultado del panel: Panel PASS o Panel FAIL."
+        )
+
+        self.combo_modelos.configure(state="readonly")
+        self.btn_pass_panel.configure(state="normal")
+        self.btn_fail_panel.configure(state="normal")
+        self.btn_confirmar_panel.configure(state="disabled")
+        self.btn_cancelar_panel.configure(state="disabled")
+
+    def registrar_panel_pass(self):
+        """
+        Registra inmediatamente todas las PCB del panel como PASS.
+        El modelo seleccionado se conserva para el siguiente panel.
+        """
+        if not self.modelo_actual:
+            messagebox.showwarning(
+                "Modelo requerido",
+                "Seleccione un modelo antes de registrar el panel.",
+                parent=self.root
+            )
+            return
+
+        if self.proceso_panel_activo or self.modo_panel_fail:
+            return
+
+        self.posiciones_defectuosas.clear()
+
+        # Bloqueo temporal para evitar un doble registro por doble clic.
+        self.proceso_panel_activo = True
+        self.combo_modelos.configure(state="disabled")
+        self.btn_pass_panel.configure(state="disabled")
+        self.btn_fail_panel.configure(state="disabled")
+
+        self.crear_panel_actual()
+        self.panel_actual["estado"] = "RESUMEN"
+
+        print(
+            f"Panel PASS | Modelo: {self.modelo_actual} | "
+            f"PCB registradas: {self.total_pcb_panel}"
+        )
+
+        self.finalizar_y_guardar_panel()
+
+    def iniciar_panel_fail(self):
+        """
+        Inicia el flujo de Panel FAIL y muestra la matriz para seleccionar
+        una o varias PCB defectuosas.
+        """
+        if not self.modelo_actual:
+            messagebox.showwarning(
+                "Modelo requerido",
+                "Seleccione un modelo antes de registrar el panel.",
+                parent=self.root
+            )
+            return
+
+        if self.proceso_panel_activo:
+            return
+
+        self.modo_panel_fail = True
+
+        # Mantener fijo el modelo durante la selección de posiciones.
+        self.combo_modelos.configure(state="disabled")
+        self.btn_pass_panel.configure(state="disabled")
+        self.btn_fail_panel.configure(state="disabled")
+
+        self.lbl_estado_proceso.configure(
+            text=(
+                "Panel FAIL: seleccione únicamente las PCB defectuosas "
+                "y presione Confirmar panel."
+            )
+        )
+
         self.mostrar_panel_modelo()
+
+    @staticmethod
+    def obtener_nombre_origen_panel(origen):
+        nombres = {
+            "SI": "Superior izquierda",
+            "SD": "Superior derecha",
+            "II": "Inferior izquierda",
+            "ID": "Inferior derecha"
+        }
+        return nombres.get(origen, "Superior izquierda")
+
+    def obtener_distribucion_pcb(
+        self,
+        renglones,
+        columnas,
+        origen="SI",
+        recorrido="NORMAL"
+    ):
+        """Crea la matriz física de numeración del panel."""
+
+        origen = str(origen).strip().upper()
+        recorrido = str(recorrido).strip().upper()
+
+        matriz = []
+        numero_pcb = 1
+
+        for renglon in range(renglones):
+            fila = list(
+                range(
+                    numero_pcb,
+                    numero_pcb + columnas
+                )
+            )
+            numero_pcb += columnas
+
+            if recorrido == "SERPIENTE" and renglon % 2 == 1:
+                fila.reverse()
+
+            matriz.append(fila)
+
+        if origen in ("SD", "ID"):
+            matriz = [list(reversed(fila)) for fila in matriz]
+
+        if origen in ("II", "ID"):
+            matriz.reverse()
+
+        return matriz
 
     def mostrar_panel_modelo(self):
         """
-        Dibuja la cuadrícula del modelo seleccionado.
-        """
-        self.frame_panel_pcb.grid()
+        Dibuja la cuadrícula del modelo seleccionado respetando
+        el origen y el recorrido configurados en models.ini.
 
-        if self.frame_panel_pcb is None:
+        Se utiliza solamente después de presionar Panel FAIL.
+        """
+        if self.frame_panel_pcb is None or not self.modelo_actual:
             return
+
+        self.frame_panel_pcb.grid()
 
         for widget in self.frame_panel_pcb.winfo_children():
             widget.destroy()
@@ -1844,24 +2082,17 @@ class RegistroDefectosSMT:
         self.botones_pcb.clear()
         self.posiciones_defectuosas.clear()
 
-        if not self.modelo_actual:
-            self.lbl_info_modelo.configure(
-                text="Seleccione un modelo"
-            )
-
-            self.btn_confirmar_panel.configure(
-                state="disabled"
-            )
-            return
+        nombre_origen = self.obtener_nombre_origen_panel(self.origen_panel)
 
         self.lbl_info_modelo.configure(
             text=(
                 f"Modelo: {self.modelo_actual}     "
                 f"Número de parte: {self.numero_parte_actual}     "
-                f"Configuración: "
-                f"{self.renglones_panel} × "
+                f"Configuración: {self.renglones_panel} × "
                 f"{self.columnas_panel}     "
-                f"Total PCB: {self.total_pcb_panel}"
+                f"Total PCB: {self.total_pcb_panel}\n"
+                f"PCB 1: {nombre_origen}     "
+                f"Recorrido: {self.recorrido_panel.title()}"
             )
         )
 
@@ -1872,10 +2103,16 @@ class RegistroDefectosSMT:
                 uniform="pcb"
             )
 
-        numero_pcb = 1
+        distribucion = self.obtener_distribucion_pcb(
+            self.renglones_panel,
+            self.columnas_panel,
+            self.origen_panel,
+            self.recorrido_panel
+        )
 
         for renglon in range(self.renglones_panel):
             for columna in range(self.columnas_panel):
+                numero_pcb = distribucion[renglon][columna]
 
                 boton = ctk.CTkButton(
                     self.frame_panel_pcb,
@@ -1887,9 +2124,7 @@ class RegistroDefectosSMT:
                     fg_color="#454B70",
                     hover_color="#596083",
                     command=lambda posicion=numero_pcb: (
-                        self.seleccionar_posicion_pcb(
-                            posicion
-                        )
+                        self.seleccionar_posicion_pcb(posicion)
                     )
                 )
 
@@ -1902,11 +2137,39 @@ class RegistroDefectosSMT:
                 )
 
                 self.botones_pcb[numero_pcb] = boton
-                numero_pcb += 1
 
-        self.btn_confirmar_panel.configure(
-            state="normal"
-        )
+        self.btn_confirmar_panel.configure(state="normal")
+        self.btn_cancelar_panel.configure(state="normal")
+
+    def cancelar_seleccion_panel(self):
+        """
+        Cancela únicamente la selección del Panel FAIL y conserva
+        el modelo seleccionado.
+        """
+        if self.proceso_panel_activo:
+            messagebox.showwarning(
+                "Inspección en proceso",
+                "No es posible cancelar desde esta etapa.",
+                parent=self.root
+            )
+            return
+
+        if not self.modo_panel_fail:
+            return
+
+        if self.posiciones_defectuosas:
+            respuesta = messagebox.askyesno(
+                "Cancelar selección",
+                (
+                    "¿Desea cancelar la selección del Panel FAIL?\n\n"
+                    "Las PCB marcadas como defectuosas se perderán."
+                ),
+                parent=self.root
+            )
+            if not respuesta:
+                return
+
+        self.preparar_modelo_para_panel()
 
     def seleccionar_posicion_pcb(self, posicion):
         """
@@ -1945,67 +2208,46 @@ class RegistroDefectosSMT:
 
     def confirmar_panel(self):
         """
-        Confirma las posiciones defectuosas seleccionadas e inicia
-        el proceso de captura de ID.
+        Confirma un Panel FAIL e inicia la captura de ID de las PCB
+        defectuosas seleccionadas.
         """
-
         if not self.modelo_actual:
             messagebox.showwarning(
                 "Modelo requerido",
-                "Seleccione un modelo antes de confirmar el panel."
+                "Seleccione un modelo antes de confirmar el panel.",
+                parent=self.root
             )
             return
 
-        total_defectuosas = len(
-            self.posiciones_defectuosas
-        )
+        if not self.modo_panel_fail:
+            messagebox.showwarning(
+                "Panel FAIL requerido",
+                "Presione Panel FAIL antes de seleccionar posiciones.",
+                parent=self.root
+            )
+            return
 
-        total_buenas = (
-            self.total_pcb_panel
-            - total_defectuosas
-        )
+        total_defectuosas = len(self.posiciones_defectuosas)
 
         if total_defectuosas == 0:
-            mensaje_adicional = (
-                "\n\nNo se seleccionaron PCB defectuosas.\n"
-                "Todas las posiciones se registrarán como PASS."
+            messagebox.showwarning(
+                "PCB defectuosa requerida",
+                (
+                    "El panel fue marcado como FAIL.\n\n"
+                    "Seleccione al menos una PCB defectuosa "
+                    "antes de confirmar."
+                ),
+                parent=self.root
             )
-        else:
-            mensaje_adicional = (
-                "\n\nDespués de confirmar deberá capturar "
-                "el ID de cada PCB defectuosa."
-            )
-
-        # respuesta = messagebox.askyesno(
-            # "Confirmar panel",
-            # (
-            # f"Modelo: {self.modelo_actual}\n"
-            # f"Número de parte: {self.numero_parte_actual}\n\n"
-            # f"PCB totales: {self.total_pcb_panel}\n"
-            # f"PCB buenas: {total_buenas}\n"
-            # f"PCB defectuosas: {total_defectuosas}"
-            # f"{mensaje_adicional}\n\n"
-            # "¿Desea confirmar la selección?"
-            # )
-        # )
-
-        # if not respuesta:
-            # return
+            return
 
         self.crear_panel_actual()
         self.bloquear_seleccion_panel()
 
         print(
             "Posiciones defectuosas:",
-            sorted(
-                self.posiciones_defectuosas.keys()
-            )
+            sorted(self.posiciones_defectuosas.keys())
         )
-
-        if total_defectuosas == 0:
-            self.panel_actual["estado"] = "RESUMEN"
-            self.mostrar_resumen_provisional_panel()
-            return
 
         self.abrir_captura_ids()
 
@@ -2030,7 +2272,7 @@ class RegistroDefectosSMT:
             }
 
         sesion = datetime.now().strftime(
-            "SES-%Y%m%d-%H%M%S"
+            "SES-%Y%m%d-%H%M%S-%f"
         )
 
         sesion = (
@@ -2044,6 +2286,8 @@ class RegistroDefectosSMT:
             "numero_parte": self.numero_parte_actual,
             "renglones": self.renglones_panel,
             "columnas": self.columnas_panel,
+            "origen": self.origen_panel,
+            "recorrido": self.recorrido_panel,
             "total_pcb": self.total_pcb_panel,
             "total_buenas": (
                 self.total_pcb_panel
@@ -2059,43 +2303,48 @@ class RegistroDefectosSMT:
 
     def bloquear_seleccion_panel(self):
         """
-        Bloquea el modelo y las posiciones después de confirmar.
+        Bloquea el modelo y la matriz después de confirmar un Panel FAIL.
         """
-
         self.proceso_panel_activo = True
 
-        self.combo_modelos.configure(
-            state="disabled"
-        )
+        self.combo_modelos.configure(state="disabled")
+        self.btn_pass_panel.configure(state="disabled")
+        self.btn_fail_panel.configure(state="disabled")
+        self.btn_confirmar_panel.configure(state="disabled")
 
-        self.btn_confirmar_panel.configure(
-            state="disabled"
-        )
+        if self.btn_cancelar_panel is not None:
+            self.btn_cancelar_panel.configure(state="disabled")
 
         for boton in self.botones_pcb.values():
-            boton.configure(
-                state="disabled"
-            )
+            boton.configure(state="disabled")
 
     def desbloquear_seleccion_panel(self):
         """
-        Permite nuevamente seleccionar modelo y posiciones.
+        Regresa a la selección de PCB del Panel FAIL cuando se cancela
+        una etapa posterior, como la captura de ID o defectos.
         """
-
         self.proceso_panel_activo = False
 
-        self.combo_modelos.configure(
-            state="readonly"
-        )
+        if self.modo_panel_fail:
+            self.combo_modelos.configure(state="disabled")
+            self.btn_pass_panel.configure(state="disabled")
+            self.btn_fail_panel.configure(state="disabled")
+            self.btn_confirmar_panel.configure(state="normal")
 
-        self.btn_confirmar_panel.configure(
-            state="normal"
-        )
+            if self.btn_cancelar_panel is not None:
+                self.btn_cancelar_panel.configure(state="normal")
 
-        for boton in self.botones_pcb.values():
-            boton.configure(
-                state="normal"
+            for boton in self.botones_pcb.values():
+                boton.configure(state="normal")
+
+            self.lbl_estado_proceso.configure(
+                text=(
+                    "Panel FAIL: modifique las PCB defectuosas "
+                    "y presione Confirmar panel."
+                )
             )
+        else:
+            self.preparar_modelo_para_panel()
 
     def mostrar_resumen_provisional_panel(self):
         """
@@ -3603,25 +3852,36 @@ class RegistroDefectosSMT:
 
     def obtener_coordenadas_posicion(self, posicion):
         """
-        Convierte el número de posición en renglón y columna.
-
-        La numeración comienza en 1.
+        Retorna el renglón y la columna físicos donde se muestra
+        una PCB, respetando origen y recorrido.
         """
 
-        if self.columnas_panel <= 0:
+        if self.columnas_panel <= 0 or self.renglones_panel <= 0:
             return 0, 0
 
-        renglon = (
-            (posicion - 1)
-            // self.columnas_panel
-        ) + 1
+        origen = self.origen_panel
+        recorrido = self.recorrido_panel
 
-        columna = (
-            (posicion - 1)
-            % self.columnas_panel
-        ) + 1
+        if self.panel_actual:
+            origen = self.panel_actual.get("origen", origen)
+            recorrido = self.panel_actual.get(
+                "recorrido",
+                recorrido
+            )
 
-        return renglon, columna
+        distribucion = self.obtener_distribucion_pcb(
+            self.renglones_panel,
+            self.columnas_panel,
+            origen,
+            recorrido
+        )
+
+        for renglon, fila in enumerate(distribucion, start=1):
+            for columna, numero_pcb in enumerate(fila, start=1):
+                if numero_pcb == posicion:
+                    return renglon, columna
+
+        return 0, 0
 
     def asegurar_encabezados_log_pcb(self):
         """
@@ -3968,30 +4228,33 @@ class RegistroDefectosSMT:
 
     def reiniciar_inspeccion_panel(self):
         """
-        Limpia la inspección terminada y deja listo el mismo modelo
-        para iniciar otro panel.
+        Limpia la inspección terminada conservando el modelo actual.
+
+        El operador puede registrar varios paneles consecutivos del mismo
+        modelo sin volver a seleccionarlo.
         """
+        modelo_conservar = self.modelo_actual
 
         self.panel_actual = None
         self.proceso_panel_activo = False
+        self.modo_panel_fail = False
 
         self.posiciones_defectuosas.clear()
         self.posiciones_pendientes_defectos.clear()
         self.defectos_pcb_actual.clear()
-
         self.indice_pcb_defecto_actual = 0
 
-        self.combo_modelos.configure(
-            state="readonly"
-        )
-
-        self.restablecer_seleccion_panel()
+        if modelo_conservar:
+            self.modelo_seleccionado.set(modelo_conservar)
+            self.preparar_modelo_para_panel()
+        else:
+            self.restablecer_seleccion_panel()
 
         self.solicitar_actualizacion_dashboard()
 
     def restablecer_seleccion_panel(self):
         """
-        Regresa la interfaz al estado inicial sin un panel seleccionado.
+        Regresa la interfaz al estado inicial sin un modelo seleccionado.
         """
         self.frame_panel_pcb.grid_remove()
 
@@ -4000,6 +4263,11 @@ class RegistroDefectosSMT:
         self.renglones_panel = 0
         self.columnas_panel = 0
         self.total_pcb_panel = 0
+        self.origen_panel = "SI"
+        self.recorrido_panel = "NORMAL"
+
+        self.proceso_panel_activo = False
+        self.modo_panel_fail = False
 
         self.modelo_seleccionado.set(
             self.opcion_seleccionar_panel
@@ -4014,15 +4282,25 @@ class RegistroDefectosSMT:
 
         if self.lbl_info_modelo is not None:
             self.lbl_info_modelo.configure(
-                text=(
-                    "Seleccione un panel para iniciar la inspección"
-                )
+                text="Seleccione un modelo para iniciar la inspección"
             )
 
-        if self.btn_confirmar_panel is not None:
-            self.btn_confirmar_panel.configure(
-                state="disabled"
+        self.lbl_estado_proceso.configure(
+            text=(
+                "Seleccione un modelo y después indique "
+                "si el panel es PASS o FAIL."
             )
+        )
+
+        self.combo_modelos.configure(state="readonly")
+        self.btn_pass_panel.configure(state="disabled")
+        self.btn_fail_panel.configure(state="disabled")
+
+        if self.btn_confirmar_panel is not None:
+            self.btn_confirmar_panel.configure(state="disabled")
+
+        if self.btn_cancelar_panel is not None:
+            self.btn_cancelar_panel.configure(state="disabled")
 
     def obtener_lista_defectos_captura(self):
         """
@@ -5835,10 +6113,18 @@ class RegistroDefectosSMT:
                 uniform="heatmap_pcb"
             )
 
-        numero_pcb = 1
+        origen = configuracion.get("origen", "SI")
+        recorrido = configuracion.get("recorrido", "NORMAL")
+        distribucion = self.obtener_distribucion_pcb(
+            renglones,
+            columnas,
+            origen,
+            recorrido
+        )
 
         for renglon in range(renglones):
             for columna in range(columnas):
+                numero_pcb = distribucion[renglon][columna]
 
                 datos_pcb = self.datos_heatmap_pcb.get(
                     numero_pcb,
@@ -5899,8 +6185,6 @@ class RegistroDefectosSMT:
                     pady=7,
                     sticky="nsew"
                 )
-
-                numero_pcb += 1
 
         # =====================================================
         # LEYENDA
@@ -6469,9 +6753,9 @@ class RegistroDefectosSMT:
         filas_funciones = 1
 
         total_filas = (
-                filas_letras
-                + filas_numeros
-                + filas_funciones
+            filas_letras
+            + filas_numeros
+            + filas_funciones
         )
 
         # =====================================================
@@ -6479,9 +6763,9 @@ class RegistroDefectosSMT:
         # =====================================================
 
         ancho_calculado = (
-                columnas * ancho_boton
-                + columnas * separacion * 2
-                + margen_horizontal
+            columnas * ancho_boton
+            + columnas * separacion * 2
+            + margen_horizontal
         )
 
         ancho = max(
@@ -6493,9 +6777,9 @@ class RegistroDefectosSMT:
         )
 
         alto_calculado = (
-                total_filas * alto_boton
-                + total_filas * separacion * 2
-                + margen_vertical
+            total_filas * alto_boton
+            + total_filas * separacion * 2
+            + margen_vertical
         )
 
         alto = max(
@@ -6653,12 +6937,12 @@ class RegistroDefectosSMT:
                     lista_teclas
             ):
                 fila = (
-                        fila_inicial
-                        + indice // columnas
+                    fila_inicial
+                    + indice // columnas
                 )
 
                 columna = (
-                        indice % columnas
+                    indice % columnas
                 )
 
                 boton = ctk.CTkButton(
@@ -6727,7 +7011,7 @@ class RegistroDefectosSMT:
         )
 
         columna_aceptar = (
-                span_borrar + span_limpiar
+            span_borrar + span_limpiar
         )
 
         span_aceptar = max(
@@ -6816,7 +7100,6 @@ class RegistroDefectosSMT:
             )
         )
 
-
     def procesar_tecla_smt(self, tecla):
         """
         Procesa las teclas del teclado SMT.
@@ -6838,7 +7121,6 @@ class RegistroDefectosSMT:
         elif tecla == "Limpiar":
             valor_nuevo = ""
 
-
         elif tecla == "Aceptar":
 
             self.cerrar_teclado_smt()
@@ -6849,7 +7131,7 @@ class RegistroDefectosSMT:
 
         else:
             valor_nuevo = (
-                    valor_actual + tecla
+                valor_actual + tecla
             )
 
         self.entry_destino_teclado.delete(
@@ -6879,7 +7161,6 @@ class RegistroDefectosSMT:
 
         self.ventana_teclado_smt = None
         self.entry_destino_teclado = None
-
 
 
 if __name__ == "__main__":

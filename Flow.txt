@@ -1,0 +1,15 @@
+SELECCIONAR MODELO
+       ↓
+   queda fijo
+       ↓
+┌───────────────┬───────────────┐
+│  PANEL PASS   │  PANEL FAIL   │
+└───────────────┴───────────────┘
+       ↓                 ↓
+Guardar todo PASS    Mostrar matriz
+       ↓                 ↓
+Nuevo panel          Seleccionar PCB
+       ↓                 ↓
+PASS / FAIL          ID + defectos
+       ↓                 ↓
+       └──── mismo modelo ┘

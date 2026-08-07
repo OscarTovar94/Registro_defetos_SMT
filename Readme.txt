@@ -1,13 +1,12 @@
-------------------------------------------------------------
+---------------------------------------------------------------------------------------------------
 Proyecto: Registro de defectos SMT
 Autor: Oscar Tovar
 ELRAD Electromics México
-------------------------------------------------------------
-Esta aplicación fue creada para registrar los defectos 
-reales en la línea de SMT. Además de guardar la posición y 
-el PCB del defecto, genera diversas gráficas para presentar 
-la información de forma clara y concisa. 
-------------------------------------------------------------
+---------------------------------------------------------------------------------------------------
+Esta aplicación fue creada para registrar los defectos reales en la línea de SMT. Además de guardar 
+la posición y el PCB del defecto, genera diversas gráficas para presentar la información de forma 
+clara y concisa. 
+---------------------------------------------------------------------------------------------------
 Historial de Revisiones
 
 Rev. 1.0 - 21/07/2026
@@ -28,4 +27,11 @@ pantalla touch.
 
 Rev. 4.1 - 05/08/2026
 - Posible modificar matriz de panel de PCB.
-------------------------------------------------------------
+
+Rev. 5.0 - 07/08/2026
+- Se agregan botones "Panel PASS" y "Panel FAIL".
+- Cambio de secuencia de registro, al presionar "Panel PASS", se guarda un panel como bueno para 
+alimentar el FPY.
+- Al presionar "Panel FAIL", se abre la matriz del panel para seleccionar la posición y realizar
+la secuencia ya conocida sobre el registro del defecto.
+---------------------------------------------------------------------------------------------------
